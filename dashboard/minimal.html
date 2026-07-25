@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seefu: plate check for autonomous kitchens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* Seefu pass station. One column, four blocks: inspect a plate, then the
+   issue beside the kitchen memory, then the manager call and retraining.
+
+   Light industrial HMI. Paper white, 1px hairlines, zero radius, zero shadow,
+   mono for every id / score / designator / timestamp. Status is never carried
+   by colour alone - there is always a glyph or a word beside it, because this
+   is a safety readout that has to survive a projector and a colourblind eye. */
+:root{
+  --paper:#FFFFFF;--panel:#F5F6F7;--line:#D6D9DD;--line-soft:#E6E8EB;
+  --ink:#111316;--muted:#5B6169;--faint:#8A9099;
+  --accent:#0B5FFF;--accent-deep:#0949C4;
+  --pass:#0F7B4F;--pass-wash:#EEF6F2;
+  --fail:#C62828;--fail-wash:#FBEEEE;
+  --warn:#B26A00;--warn-wash:#FDF6EC;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;border-radius:0}
+html,body{background:var(--paper)}
+body{color:var(--ink);font-family:var(--sans);font-size:13px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+.wrap{width:min(1180px,96vw);margin:0 auto;padding:20px 0 36px}
+button{font:inherit;border-radius:0}
+img{border-radius:0}
+
+/* ---------- header ---------- */
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  border:1px solid var(--line);background:var(--panel);padding:13px 16px;margin-bottom:16px}
+.brand{font-size:18px;font-weight:700;letter-spacing:.36em;padding-left:.36em;
+  text-transform:uppercase;line-height:1}
+.role{font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);border-left:1px solid var(--line);padding-left:16px}
+.ident{font-family:var(--mono);font-size:11px;color:var(--muted);
+  display:flex;gap:14px;flex-wrap:wrap}
+.ident b{color:var(--ink);font-weight:500}
+.conn{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:10px;
+  font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
+  border:1px solid var(--line);background:var(--paper);padding:7px 11px;white-space:nowrap}
+.conn .dot{width:8px;height:8px;flex:0 0 8px;background:var(--faint)}
+.conn.live{color:var(--pass);border-color:var(--pass)}
+.conn.live .dot{background:var(--pass)}
+
+/* ---------- panels ---------- */
+.panel{border:1px solid var(--line);background:var(--paper);
+  display:flex;flex-direction:column;min-width:0}
+.phead{display:flex;align-items:center;gap:12px;flex:0 0 auto;min-height:38px;
+  padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.phead h2{font-size:10.5px;font-weight:700;letter-spacing:.2em;text-transform:uppercase}
+.phead .hint{margin-left:auto;font-size:9.5px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);text-align:right}
+.pbody{padding:14px;flex:1 1 auto;min-height:0}
+.pbody.flush{padding:0;display:flex;flex-direction:column}
+#secUpload{margin-bottom:16px}
+.cols{display:grid;gap:16px;grid-template-columns:minmax(0,1fr);margin-bottom:16px}
+@media(min-width:1000px){.cols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+/* Both panels are one fixed height and scroll inside, so the console keeps the
+   same shape from plate to plate - controls do not move under the operator's
+   hand when a plate happens to have more findings. */
+#secIssue,#secMemory{height:min(78vh,760px);min-height:520px}
+#secIssue .pbody,#secMemory .pbody{overflow-y:auto}
+
+/* ---------- inspect a dish ---------- */
+.inspect{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.thumb{flex:0 0 auto;width:196px;height:148px;border:1px solid var(--line);
+  background:var(--panel);display:grid;place-items:center;overflow:hidden}
+.thumb img{max-width:100%;max-height:100%;display:none;object-fit:contain}
+.thumb .ph{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);text-align:center;padding:0 10px}
+.thumb.has img{display:block}.thumb.has .ph{display:none}
+.controls{flex:1 1 300px;min-width:260px;display:flex;flex-direction:column;gap:12px}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap}
+button.act{border:1px solid var(--line);background:var(--paper);color:var(--ink);
+  font-size:10.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  padding:13px 20px;cursor:pointer}
+button.act:hover:not(:disabled){background:var(--panel);border-color:var(--muted)}
+button.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.act.primary:hover:not(:disabled){background:var(--accent-deep);border-color:var(--accent-deep)}
+/* a disabled control reads as inert, never as a dimmed live button */
+button.act:disabled{cursor:not-allowed;background:var(--panel);
+  border-color:var(--line);color:var(--faint)}
+.statusline{font-family:var(--mono);font-size:11.5px;color:var(--muted);
+  border-left:2px solid var(--line);padding-left:10px;min-height:17px}
+.statusline.ready{color:var(--ink);border-left-color:var(--accent)}
+.statusline.busy{color:var(--accent);border-left-color:var(--accent)}
+.statusline.bad{color:var(--fail);border-left-color:var(--fail)}
+input[type=file]{display:none}
+
+/* ---------- issue ---------- */
+.verdict{display:flex;align-items:center;gap:13px;border:1px solid var(--line);
+  background:var(--panel);padding:12px 13px;margin-bottom:12px}
+.verdict .gly{width:38px;height:38px;flex:0 0 38px;display:grid;place-items:center;
+  border:1px solid var(--line);background:var(--paper);
+  font-size:19px;font-weight:700;line-height:1;color:var(--muted)}
+.verdict .word{font-family:var(--mono);font-size:17px;font-weight:700;letter-spacing:.1em}
+.verdict .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:5px}
+.verdict.pass{border-color:var(--pass);background:var(--pass-wash)}
+.verdict.pass .gly{border-color:var(--pass);color:var(--pass)}
+.verdict.pass .word{color:var(--pass)}
+.verdict.fail{border-color:var(--fail);background:var(--fail-wash)}
+.verdict.fail .gly{border-color:var(--fail);color:var(--fail)}
+.verdict.fail .word{color:var(--fail)}
+.verdict.err{border-color:var(--warn);background:var(--warn-wash)}
+.verdict.err .gly{border-color:var(--warn);color:var(--warn)}
+.verdict.err .word{color:var(--warn)}
+
+.caseline{border:1px solid var(--line-soft);background:var(--panel);
+  padding:8px 11px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.caseline b{color:var(--ink);font-weight:700;letter-spacing:.06em}
+.caseline .note{display:block;margin-top:5px;font-family:var(--sans);font-size:11.5px;line-height:1.5}
+
+.flabel{font-size:9.5px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);border-bottom:1px solid var(--line-soft);
+  padding-bottom:5px;margin-bottom:9px}
+.finding{border:1px solid var(--line);border-left:3px solid var(--fail);
+  background:var(--paper);padding:10px 12px;margin-bottom:8px}
+.f-top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:12px}
+.f-id{font-weight:700;letter-spacing:.05em;color:var(--ink)}
+.f-id.loc{letter-spacing:.13em;font-size:11.5px}
+.f-comp{color:var(--muted);font-size:11px}
+.f-loc{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);
+  border:1px solid var(--line);background:var(--panel);padding:2px 7px}
+.f-desc{font-family:var(--sans);font-size:12.5px;line-height:1.5;margin-top:6px}
+.f-src{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);margin-top:6px}
+.empty{border:1px dashed var(--line);background:var(--panel);
+  padding:11px 12px;color:var(--muted);font-size:12px}
+.notice{border:1px solid var(--warn);border-left:3px solid var(--warn);background:var(--warn-wash);
+  padding:10px 12px;font-size:12px;line-height:1.55;color:var(--ink);margin-top:12px}
+.notice .k{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--warn);margin-bottom:5px}
+.overlaywrap{margin-top:12px;display:none}
+.overlaywrap.on{display:block}
+#overlayImg{width:100%;display:block;border:1px solid var(--line);cursor:zoom-in}
+.ocap{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);margin-top:6px}
+
+/* ---------- kitchen memory ---------- */
+.membar{flex:0 0 auto;border-bottom:1px solid var(--line);background:var(--panel);
+  padding:9px 13px;font-size:10.5px;line-height:1.55;color:var(--muted)}
+.membar b{color:var(--ink);font-weight:600}
+.memblock{margin-bottom:14px}
+.meminsight{border:1px solid var(--accent);border-left:3px solid var(--accent);
+  background:#EFF4FF;padding:10px 12px;font-size:12.5px;line-height:1.55;margin-bottom:8px}
+.meminsight .k{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--accent);margin-bottom:5px}
+.memlesson{border:1px solid var(--line);border-left:3px solid var(--warn);
+  background:var(--warn-wash);padding:9px 11px;font-size:12px;line-height:1.5;margin-bottom:8px}
+.memlesson .k{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--warn);margin-bottom:4px}
+.memitem{border:1px solid var(--line-soft);background:var(--panel);
+  padding:8px 11px;margin-bottom:6px;font-size:11.5px;line-height:1.5}
+.memitem .mt{font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.membrief{white-space:pre-wrap;border:1px solid var(--line);background:var(--panel);
+  padding:11px 12px;font-size:12px;line-height:1.6}
+.memrow{display:flex;gap:8px;margin-top:8px}
+.memrow input{flex:1 1 auto;font:inherit;font-size:12px;border:1px solid var(--line);
+  padding:10px 11px;background:var(--paper);color:var(--ink)}
+.memrow input:focus{outline:none;border-color:var(--accent)}
+.f-fix{font-family:var(--sans);font-size:12.5px;line-height:1.5;margin-top:6px;
+  border-left:3px solid var(--pass);background:var(--pass-wash);padding:6px 9px}
+.f-fix b{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--pass)}
+
+/* ---------- operator call ---------- */
+.callrow{display:flex;align-items:center;gap:11px}
+.callgly{width:26px;height:26px;flex:0 0 26px;display:grid;place-items:center;
+  border:1px solid var(--line);background:var(--panel);
+  font-size:13px;line-height:1;color:var(--muted)}
+#phone{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.callrow.ok .callgly{border-color:var(--pass);color:var(--pass)}
+.callrow.ok #phone{color:var(--pass)}
+.callrow.bad .callgly{border-color:var(--fail);color:var(--fail)}
+.callrow.bad #phone{color:var(--fail)}
+.callrow.busy .callgly{border-color:var(--accent);color:var(--accent)}
+.callrow.busy #phone{color:var(--accent)}
+.voiceline{margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--muted);
+  border:1px solid var(--line-soft);background:var(--panel);padding:7px 10px;display:none}
+.voiceline.on{display:block}
+.voiceline b{color:var(--ink);font-weight:700;letter-spacing:.06em}
+.feed{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:10px;display:none}
+.feed.on{display:block}
+.feed .flab{font-size:9.5px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:7px}
+.feed ul{list-style:none}
+.feed li{display:grid;grid-template-columns:66px 108px 1fr;gap:10px;
+  font-family:var(--mono);font-size:11px;color:var(--ink);padding:3px 0;
+  border-bottom:1px solid var(--line-soft)}
+.feed li:last-child{border-bottom:0}
+.feed .t{color:var(--faint)}
+.feed .s{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:640px){.feed li{grid-template-columns:1fr}.feed .s{white-space:normal}}
+
+/* ---------- drag and drop ---------- */
+body.drag .wrap{outline:2px dashed var(--accent);outline-offset:6px}
+#dropHint{display:none;position:fixed;inset:0;z-index:20;background:rgba(255,255,255,.92);
+  place-items:center;pointer-events:none;font-size:14px;font-weight:600;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+body.drag #dropHint{display:grid}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">Seefu</div>
+    <div class="role">plate check for autonomous kitchens</div>
+    <div class="ident" id="ident">
+      <span>dish <b id="idBoard">—</b></span>
+      <span>line <b id="idBatch">—</b></span>
+    </div>
+    <div class="conn" id="conn"><span class="dot"></span><span id="connText">Connecting</span></div>
+  </header>
+
+  <section class="panel" id="secUpload">
+    <div class="phead">
+      <h2>Inspect a plate</h2>
+      <span class="hint">Drop an image anywhere on this page</span>
+    </div>
+    <div class="pbody">
+      <div class="inspect">
+        <div class="thumb" id="thumb">
+          <img id="previewImg" alt="staged plate image">
+          <div class="ph">No image staged</div>
+        </div>
+        <div class="controls">
+          <div class="btnrow">
+            <button class="act" id="btnUpload" type="button">Upload image</button>
+            <button class="act primary" id="btnRun" type="button" disabled>Run inspection</button>
+          </div>
+          <div class="statusline" id="fileStatus">No image staged. Upload one, or drop it anywhere on this page.</div>
+          <input type="file" id="fileIn" accept="image/png,image/jpeg,image/webp">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="cols">
+    <section class="panel" id="secIssue">
+      <div class="phead"><h2>Issue</h2><span class="hint" id="findTag">Standby</span></div>
+      <div class="pbody">
+        <div class="verdict" id="verdict">
+          <div class="gly" id="vGly">—</div>
+          <div>
+            <div class="word" id="vText">No inspection yet</div>
+            <div class="meta" id="vSub">Stage a dish image, then press Run inspection.</div>
+          </div>
+        </div>
+        <div class="caseline" id="caseLine" hidden></div>
+        <div class="flabel">Findings</div>
+        <div id="findings"><div class="empty">No finding requires review.</div></div>
+        <div class="notice" id="notice" hidden><span class="k">Station note</span><span id="noticeBody"></span></div>
+        <div class="overlaywrap" id="overlayWrap">
+          <img id="overlayImg" alt="annotated dish overlay marking the flagged regions">
+          <div class="ocap">Annotated overlay &mdash; click to open full size</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="secMemory">
+      <div class="phead"><h2>Kitchen memory</h2><span class="hint" id="memTag">XTrace</span></div>
+      <div class="pbody">
+        <div class="membar" style="margin:-14px -14px 12px;border-bottom:1px solid var(--line)">
+          <b>The station remembers every plate.</b> Each verdict is filed to XTrace and each
+          failure is checked against past plates, so a repeating miss reads as a line
+          problem, not a one-off. Chef corrections resurface on future plates of this dish.
+        </div>
+        <div class="memblock" id="memInsightBlock" hidden>
+          <div class="meminsight" id="memInsight"><span class="k">Recall</span><span id="memInsightBody"></span></div>
+        </div>
+        <div class="memblock" id="memLessonBlock" hidden>
+          <div class="memlesson"><span class="k">Chef guidance for this dish</span><span id="memLessonBody"></span></div>
+        </div>
+        <div class="flabel">Shift briefing</div>
+        <div class="memblock">
+          <div class="membrief" id="memBrief">Press the button after a few plates: XTrace composes
+what went wrong this shift and what the next shift should watch.</div>
+          <div class="memrow">
+            <button class="act" id="btnBrief" type="button">Compose shift briefing</button>
+            <button class="act" id="btnRecent" type="button">Recent memories</button>
+          </div>
+        </div>
+        <div class="flabel">Recent kitchen memories</div>
+        <div class="memblock" id="memRecent"><div class="empty">Not loaded yet.</div></div>
+        <div class="flabel">Teach the station</div>
+        <div class="memrow">
+          <input id="memTeach" placeholder="e.g. Extra scallion is fine on this dish, never flag it">
+          <button class="act" id="btnTeach" type="button">Teach</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" id="secCall">
+    <div class="phead"><h2>Manager call</h2><span class="hint">Twilio</span></div>
+    <div class="pbody">
+      <div class="callrow" id="callRow">
+        <span class="callgly" id="callGly">—</span>
+        <span id="phone">No call placed.</span>
+      </div>
+      <div class="voiceline" id="voiceLine"></div>
+      <div class="feed" id="feed">
+        <div class="flab">Station activity</div>
+        <ul id="feedList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="secTrain" style="margin-top:16px">
+    <div class="phead"><h2>Retraining</h2><span class="hint" id="trainTag">Idle</span></div>
+    <div class="pbody">
+      <div class="btnrow">
+        <button class="act" id="btnAddGood" type="button">Add good plates</button>
+        <button class="act" id="btnRebuild" type="button">Rebuild memory bank</button>
+        <input type="file" id="goodIn" accept="image/png,image/jpeg" multiple>
+      </div>
+      <div class="statusline" id="trainStatus" style="margin-top:10px">The bank learns only from
+        known-good plates. Stage new photos, rebuild, and the serving model hot-swaps when
+        training finishes. The server never goes down.</div>
+    </div>
+  </section>
+
+</div>
+
+<div id="dropHint">Drop image to inspect</div>
+<script>
+const $=id=>document.getElementById(id);
+const phone=$("phone"),callRow=$("callRow"),callGly=$("callGly"),overlayImg=$("overlayImg");
+let busy=false;
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const num=v=>typeof v==="number"&&isFinite(v)
+  ?String(Number(v.toFixed(3))):(v==null||v===""?"—":String(v));
+
+/* ---------- station activity feed ---------- */
+function clockNow(){
+  const d=new Date();
+  return String(d.getHours()).padStart(2,"0")+":"+
+    String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0");
+}
+function addFeed(source,message){
+  const list=$("feedList");if(!list||!message)return;
+  const li=document.createElement("li");
+  li.innerHTML=`<span class="t">${esc(clockNow())}</span>`+
+    `<span class="s">${esc(source||"station")}</span>`+
+    `<span>${esc(message)}</span>`;
+  list.appendChild(li);
+  while(list.children.length>8)list.removeChild(list.firstChild);
+  $("feed").classList.add("on");
+}
+
+/* ---------- websocket: live station channel ---------- */
+let ws,retry=0,pollTimer=null;
+function connect(){
+  try{ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws")}catch(e){return offline()}
+  ws.onopen=()=>{retry=0;$("conn").className="conn live";$("connText").textContent="Link live"};
+  ws.onmessage=e=>{try{handle(JSON.parse(e.data))}catch(err){}};
+  ws.onclose=offline;
+  ws.onerror=()=>{try{ws.close()}catch(e){}};
+}
+function offline(){
+  $("conn").className="conn";$("connText").textContent="Reconnecting";
+  setTimeout(connect,Math.min(8000,1000*(++retry)));
+}
+connect();
+
+function handle(m){
+  switch(m&&m.type){
+    case "context":
+      $("idBoard").textContent=m.dish||"—";
+      $("idBatch").textContent=m.batch||"—";
+      if(m.memory)$("memTag").textContent="XTrace "+m.memory.toLowerCase();
+      break;
+
+    case "inspection_start":
+      beginInspection(m.dish_id);
+      if(!busy)setStatus("busy","Station inspection running"+
+        (m.dish_id?" on "+m.dish_id:"")+"...");
+      break;
+
+    /* The websocket result carries a normalised score against a 0.5 threshold;
+       the HTTP response to /inspect carries the raw score against the real
+       threshold and lands last, so it is what the operator finally reads. */
+    case "inspection_result":
+      renderResult({dish_id:m.dish_id,verdict:m.verdict,score:m.score,
+        threshold:m.threshold,findings:m.findings||[]});
+      if(!busy){
+        const bad=m.verdict==="defect";
+        setStatus(bad?"bad":"ready",bad
+          ?"Hold on "+(m.dish_id||"the plate")+". Review the findings."
+          :"Plate "+(m.dish_id||"")+" passed.");
+      }
+      break;
+
+    case "case":
+      renderCase(m);
+      break;
+
+    case "event":
+      addFeed(m.source||m.kind||"station",m.message||"");
+      break;
+
+    case "phone":
+      onPhone(m);
+      break;
+  }
+}
+
+/* ---------- operator call ---------- */
+function setCall(cls,glyph,text){
+  callRow.className="callrow"+(cls?" "+cls:"");
+  callGly.textContent=glyph;phone.textContent=text;
+}
+/* Which voice actually spoke to the operator: the ElevenLabs render, or
+   Twilio's built-in fallback when synthesis was unavailable. */
+function setVoice(voice,reason){
+  const el=$("voiceLine");
+  if(!voice){el.className="voiceline";el.innerHTML="";return}
+  const eleven=String(voice)==="elevenlabs";
+  el.className="voiceline on";
+  el.innerHTML=eleven
+    ?'<b>Voice: ElevenLabs</b> &mdash; the operator hears the generated voice.'
+    :'<b>Voice: Twilio fallback</b> &mdash; the operator hears Twilio’s built-in voice'+
+      (reason?", because "+esc(String(reason)):"")+".";
+}
+function onPhone(m){
+  clearInterval(pollTimer);
+  setVoice(m.voice,m.reason);
+  if(m.status==="placed"){
+    setCall("busy","○","Call placed. Waiting for pickup"+(m.message?" ("+m.message+")":"")+".");
+    addFeed("voice.twilio","Call placed to the operator");
+    if(m.sid)pollStatus(m.sid);
+  }else if(m.status==="failed"){
+    setCall("bad","✕","CALL FAILED: "+(m.message||"Twilio rejected the call"));
+    addFeed("voice.twilio","Call failed");
+  }else if(m.status==="skipped"){
+    setCall("","—","Call skipped"+(m.message?" ("+m.message+")":"")+".");
+  }else if(m.status==="disabled"){
+    setCall("","—","Auto-call disabled.");
+  }else{
+    setCall("","—","Call "+(m.status||"unknown")+(m.message?": "+m.message:"")+".");
+  }
+}
+/* GET /phone/status/{sid} every 2s, up to 30 tries, until the call settles. */
+const CALL_TEXT={
+  queued:["busy","○","Queued at the carrier."],
+  ringing:["busy","○","Ringing the operator..."],
+  "in-progress":["ok","✓","CALL DELIVERED: operator on the line."],
+  completed:["ok","✓","CALL DELIVERED: the operator heard the alert."],
+  busy:["bad","✕","NOT DELIVERED: the operator line was busy."],
+  failed:["bad","✕","NOT DELIVERED: the call failed."],
+  "no-answer":["bad","✕","NOT DELIVERED: no answer."],
+  canceled:["bad","✕","NOT DELIVERED: the call was canceled."]
+};
+const CALL_DONE=["in-progress","completed","busy","failed","no-answer","canceled"];
+function pollStatus(sid){
+  let tries=0;
+  pollTimer=setInterval(async()=>{
+    if(++tries>30){clearInterval(pollTimer);return}
+    try{
+      const r=await fetch("/phone/status/"+encodeURIComponent(sid));
+      if(!r.ok)return;
+      const {status}=await r.json();
+      const t=CALL_TEXT[status];
+      if(t)setCall(t[0],t[1],t[2]);
+      if(CALL_DONE.includes(status)){
+        addFeed("voice.twilio","Call "+status);
+        clearInterval(pollTimer);
+      }
+    }catch(e){}
+  },2000);
+}
+
+/* ---------- findings ----------
+   A finding is identified by its designator when the component map matched it,
+   and otherwise by the geometry-derived location the server attaches. The word
+   "unmapped" never reaches the operator. */
+function findingHTML(x){
+  const loc=String(x.location||"").trim();
+  const id=loc?loc.toUpperCase():"REGION";
+  const src=String(x.source||"").trim();
+  const fix=String(x.fix||"").trim();
+  return `<div class="finding"><div class="f-top">`+
+    `<span class="f-id loc">${esc(id)}</span></div>`+
+    `<div class="f-desc">${esc(x.description||"")}</div>`+
+    (fix?`<div class="f-fix"><b>Fix</b> &nbsp;${esc(fix)}</div>`:"")+
+    (src?`<div class="f-src">${esc(src)}</div>`:"")+
+    `</div>`;
+}
+function setVerdict(kind,word,meta){
+  $("verdict").className="verdict"+(kind?" "+kind:"");
+  $("vGly").textContent=kind==="pass"?"✓":kind==="fail"?"✕":kind==="err"?"!":"—";
+  $("vText").textContent=word;$("vSub").textContent=meta;
+}
+function renderCase(m){
+  const el=$("caseLine");
+  if(!m.case_id&&!m.note){el.hidden=true;return}
+  const bits=[];
+  if(m.case_id)bits.push("CASE "+esc(m.case_id));
+  if(m.status)bits.push(esc(String(m.status).replace(/_/g," ")));
+  /* only speak to verification when the record actually says something about
+     it - "not yet verified" is a claim, and an absent field is not evidence */
+  if(m.verified!==undefined)bits.push(m.verified?"verified":"not yet verified");
+  if(m.zendesk_id)bits.push("ticket "+esc(m.zendesk_id));
+  el.innerHTML="<b>"+bits.join("</b> &middot; <b>")+"</b>"+
+    (m.note?`<span class="note">${esc(m.note)}</span>`:"");
+  el.hidden=false;
+}
+
+/* One renderer for both arrival paths. Fields the websocket frame does not
+   carry (note, overlay_url) are left as the run began them, so the panel fills
+   in progressively instead of flickering back to empty. */
+function renderMemory(mem){
+  const ib=$("memInsightBlock"),lb=$("memLessonBlock");
+  if(!mem){ib.hidden=true;lb.hidden=true;return}
+  const n=Number(mem.recurrences)||0;
+  let text=mem.insight||"";
+  if(!text&&n===0)text="No similar failure in kitchen memory. Filed as the first.";
+  $("memInsightBody").textContent=(n?`${n} similar past failure${n===1?"":"s"}. `:"")+text;
+  ib.hidden=!text&&!n;
+  const lessons=(mem.lessons||[]).filter(Boolean);
+  if(lessons.length){$("memLessonBody").textContent=lessons.join(" ");lb.hidden=false}
+  else lb.hidden=true;
+}
+
+function renderResult(d){
+  const fail=d.verdict==="defect";
+  setVerdict(fail?"fail":"pass",fail?"HOLD PLATE":"PASS",
+    `${d.dish_id||"—"}   score ${num(d.score)} / ${num(d.threshold)}`);
+  if("memory" in d)renderMemory(d.memory);
+  const list=Array.isArray(d.findings)?d.findings:[];
+  $("findTag").textContent=fail
+    ?(list.length?list.length+" finding"+(list.length===1?"":"s"):"Above threshold")
+    :"Clear";
+  $("findings").innerHTML=list.length?list.map(findingHTML).join("")
+    :`<div class="empty">${fail
+      ?"Scored above threshold, but no individual region was isolated."
+      :"No finding requires review."}</div>`;
+  if(d.note!==undefined){
+    if(d.note){$("noticeBody").textContent=d.note;$("notice").hidden=false}
+    else $("notice").hidden=true;
+  }
+  if(d.overlay_url){
+    overlayImg.src=d.overlay_url+"?t="+Date.now();
+    overlayImg.onclick=()=>window.open(d.overlay_url,"_blank","noopener");
+    $("overlayWrap").classList.add("on");
+  }
+}
+function beginInspection(boardId){
+  setVerdict("","INSPECTING",
+    (boardId?boardId+"   ":"")+"scoring against the memory bank");
+  $("findTag").textContent="Running";
+  $("findings").innerHTML='<div class="empty">Waiting for the verdict...</div>';
+  $("notice").hidden=true;
+  $("overlayWrap").classList.remove("on");
+  $("caseLine").hidden=true;
+}
+
+/* ---------- stage an image, then run ---------- */
+let pendingFile=null;
+function setStatus(cls,text){
+  const el=$("fileStatus");el.className="statusline"+(cls?" "+cls:"");el.textContent=text;
+}
+function selectFile(f){
+  if(!f)return;
+  if(!String(f.type||"").startsWith("image/")){
+    setStatus("bad","That file is not an image. Upload a PNG or JPEG photo of the dish.");
+    return;
+  }
+  pendingFile=f;
+  const preview=$("previewImg");
+  if(preview.dataset.url)URL.revokeObjectURL(preview.dataset.url);
+  const url=URL.createObjectURL(f);
+  preview.dataset.url=url;preview.src=url;
+  $("thumb").classList.add("has");
+  $("btnRun").disabled=busy;
+  setStatus("ready",f.name+" uploaded. Press RUN INSPECTION");
+}
+
+async function inspect(){
+  if(busy||!pendingFile)return;
+  busy=true;
+  $("btnRun").disabled=$("btnUpload").disabled=true;
+  setStatus("busy","Inspecting "+pendingFile.name+"...");
+  beginInspection(null);
+  setCall("","—","No call placed.");setVoice(null);
+  try{
+    const fd=new FormData();fd.append("file",pendingFile);
+    const r=await fetch("/inspect",{method:"POST",body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||d.error||("HTTP "+r.status));
+    renderResult(d);
+    /* The websocket "case" frames are the authoritative case record - they carry
+       the verification pass and its note, which the /inspect body does not. Only
+       fall back to the id in the response when no frame arrived (link down). */
+    if(d.case_id&&$("caseLine").hidden)renderCase({case_id:d.case_id});
+    const fail=d.verdict==="defect";
+    setStatus(fail?"bad":"ready",
+      fail?"Hold on "+(d.dish_id||"the plate")+". Review the findings and the fix."
+          :"Plate "+(d.dish_id||"")+" passed.");
+    if(fail){
+      if(callRow.className==="callrow")setCall("busy","○","Dispatching call to the manager...");
+    }else{
+      setCall("","—","No call. Plate passed.");
+    }
+  }catch(e){
+    const msg=String((e&&e.message)||e);
+    setVerdict("err","INSPECTION ERROR",msg);
+    $("findTag").textContent="Error";
+    $("findings").innerHTML='<div class="empty">'+esc(msg)+"</div>";
+    setStatus("bad","Inspection failed: "+msg);
+  }
+  $("btnUpload").disabled=false;
+  $("btnRun").disabled=!pendingFile;busy=false;
+}
+
+$("btnUpload").addEventListener("click",()=>$("fileIn").click());
+$("btnRun").addEventListener("click",()=>inspect());
+$("fileIn").addEventListener("change",()=>{
+  selectFile($("fileIn").files[0]);$("fileIn").value="";
+});
+
+/* ---------- kitchen memory panel ---------- */
+$("btnBrief").addEventListener("click",async()=>{
+  $("btnBrief").disabled=true;
+  $("memBrief").textContent="Composing from this shift's memories...";
+  try{
+    const r=await fetch("/memory/summary");
+    const d=await r.json();
+    if(!d.enabled){$("memBrief").textContent="XTRACE_API_KEY is not set on the server."}
+    else if(d.context){$("memBrief").textContent=d.context}
+    else if((d.facts||[]).length){$("memBrief").textContent=d.facts.join("\n")}
+    else{$("memBrief").textContent="No shift memories yet. Ingestion runs a few seconds "+
+      "behind each plate; inspect a plate or two and try again."}
+  }catch(e){$("memBrief").textContent="Briefing failed: "+String(e&&e.message||e)}
+  $("btnBrief").disabled=false;
+});
+$("btnRecent").addEventListener("click",async()=>{
+  $("btnRecent").disabled=true;
+  try{
+    const r=await fetch("/memory/recent");
+    const d=await r.json();
+    const mems=(d.memories||[]).filter(m=>m.text);
+    $("memRecent").innerHTML=mems.length
+      ?mems.map(m=>`<div class="memitem"><div class="mt">${esc(m.type||"fact")}`+
+        `${m.score!=null?" &middot; "+esc(num(m.score)):""}</div>${esc(m.text)}</div>`).join("")
+      :'<div class="empty">No memories retrieved yet. They appear a few seconds after each plate.</div>';
+  }catch(e){$("memRecent").innerHTML='<div class="empty">'+esc(String(e&&e.message||e))+"</div>"}
+  $("btnRecent").disabled=false;
+});
+$("btnTeach").addEventListener("click",async()=>{
+  const text=$("memTeach").value.trim();
+  if(!text)return;
+  $("btnTeach").disabled=true;
+  try{
+    const r=await fetch("/memory/correction",{method:"POST",
+      headers:{"content-type":"application/json"},body:JSON.stringify({text})});
+    if(r.ok){addFeed("memory.xtrace","Correction stored: "+text.slice(0,60));$("memTeach").value=""}
+    else addFeed("memory.xtrace","Correction failed (HTTP "+r.status+")");
+  }catch(e){addFeed("memory.xtrace","Correction failed")}
+  $("btnTeach").disabled=false;
+});
+
+/* ---------- retraining ---------- */
+let trainTimer=null;
+$("btnAddGood").addEventListener("click",()=>$("goodIn").click());
+$("goodIn").addEventListener("change",async()=>{
+  const files=[...$("goodIn").files];$("goodIn").value="";
+  if(!files.length)return;
+  const fd=new FormData();files.forEach(f=>fd.append("files",f));
+  $("trainStatus").className="statusline busy";
+  $("trainStatus").textContent="Staging "+files.length+" photo(s)...";
+  try{
+    const r=await fetch("/train/upload",{method:"POST",body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||("HTTP "+r.status));
+    $("trainStatus").className="statusline ready";
+    $("trainStatus").textContent=d.staged.length+" staged. Normal set is now "+
+      d.normal_count+" plates. Press REBUILD MEMORY BANK to retrain.";
+  }catch(e){
+    $("trainStatus").className="statusline bad";
+    $("trainStatus").textContent="Staging failed: "+String(e&&e.message||e);
+  }
+});
+$("btnRebuild").addEventListener("click",async()=>{
+  $("btnRebuild").disabled=true;
+  try{
+    const r=await fetch("/train/rebuild",{method:"POST"});
+    if(!r.ok){const d=await r.json();throw new Error(d.detail||("HTTP "+r.status))}
+    $("trainTag").textContent="Running";
+    $("trainStatus").className="statusline busy";
+    $("trainStatus").textContent="Rebuilding the memory bank...";
+    clearInterval(trainTimer);
+    trainTimer=setInterval(async()=>{
+      try{
+        const s=await(await fetch("/train/status")).json();
+        $("trainStatus").textContent="Rebuild "+s.state+
+          (s.detail?": "+s.detail:"")+" (normals: "+s.normal_count+")";
+        if(s.state==="done"||s.state==="failed"){
+          clearInterval(trainTimer);
+          $("trainTag").textContent=s.state==="done"?"Bank updated":"Failed";
+          $("trainStatus").className="statusline "+(s.state==="done"?"ready":"bad");
+          $("btnRebuild").disabled=false;
+          if(s.state==="done")addFeed("train","Memory bank rebuilt; model hot-swaps on the next plate");
+        }
+      }catch(e){}
+    },3000);
+  }catch(e){
+    $("trainStatus").className="statusline bad";
+    $("trainStatus").textContent=String(e&&e.message||e);
+    $("btnRebuild").disabled=false;
+  }
+});
+
+let dragDepth=0;
+addEventListener("dragenter",e=>{e.preventDefault();dragDepth++;document.body.classList.add("drag")});
+addEventListener("dragover",e=>e.preventDefault());
+addEventListener("dragleave",e=>{e.preventDefault();
+  if(--dragDepth<=0){dragDepth=0;document.body.classList.remove("drag")}});
+addEventListener("drop",e=>{
+  e.preventDefault();dragDepth=0;document.body.classList.remove("drag");
+  if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length)
+    selectFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>

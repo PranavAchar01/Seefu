@@ -1,0 +1,13 @@
+anomalib
+torch
+torchvision
+opencv-python
+fastapi
+uvicorn[standard]
+websockets
+openai
+httpx
+numpy
+pillow
+python-dotenv
+python-multipart
