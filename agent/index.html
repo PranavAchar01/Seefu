@@ -42,6 +42,7 @@
     The mic is silent. On a Mac: System Settings, Privacy and Security, Microphone,
     allow your browser, then reload this page.
   </div>
+  <div id="heard" style="margin-top:12px;font-family:var(--mono);font-size:11px;text-align:left"></div>
   <div id="transcript"></div>
   <div class="hint">Ask what it is seeing on the line, why plates are being held,
     what keeps going wrong, or give it a standing rule; it remembers.
@@ -128,11 +129,12 @@ async function start() {
     const send = o => dc.send(JSON.stringify(o));
 
     dc.addEventListener("open", () => {
-      // belt and braces: ask for server-side voice detection explicitly, then
-      // have the agent open the briefing itself so output is proven instantly
+      // server voice detection + a transcript of what the mic actually
+      // delivered, so "it cannot hear me" is visible instead of a mystery.
+      // No scripted opener: the agent speaks when spoken to.
       send({type: "session.update", session: {type: "realtime",
-            audio: {input: {turn_detection: {type: "server_vad"}}}}});
-      send({type: "response.create"});
+            audio: {input: {turn_detection: {type: "server_vad"},
+                            transcription: {model: "whisper-1"}}}}});
     });
 
     dc.addEventListener("message", e => {
@@ -146,6 +148,11 @@ async function start() {
           status("hearing you...", "live"); break;
         case "input_audio_buffer.speech_stopped":
           status("thinking...", "live"); break;
+        case "conversation.item.input_audio_transcription.completed":
+          if ((ev.transcript || "").trim())
+            document.getElementById("heard").textContent =
+              "You: " + ev.transcript.trim();
+          break;
         case "output_audio_buffer.started":
           transcript = "";
           status("speaking", "speaking"); break;
