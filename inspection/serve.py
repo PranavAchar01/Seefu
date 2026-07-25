@@ -45,82 +45,33 @@ from core.frames import ingest                            # noqa: E402
 from core import history, hub, memory                     # noqa: E402
 from core.casesink import get_sink                        # noqa: E402
 
-# the menu: every dish the station can check, each with its own memory bank,
-# threshold, golden reference and ingredient profile. Bands are HSV ranges;
-# mode "zone" checks grid cells (massed elements like a garnish pile), mode
-# "scatter" checks plate-wide coverage (small strewn elements like cilantro).
-DISHES = {
-    "sesame-beef-bowl": {
-        "name": "Sesame Beef Bowl",
-        "reference": "reference.png",
-        "expected": "white rice base, glazed sesame beef with chili flecks in "
-                    "the centre, steamed broccoli florets on the right, and a "
-                    "pile of fresh scallion garnish on top of the beef, in a "
-                    "black bowl",
-        "bands": {
-            "green": {"lo": (30, 60, 50), "hi": (95, 255, 255), "mode": "zone"},
-            "red": {"lo": (0, 120, 80), "hi": (12, 255, 255), "mode": "zone"},
-        },
-    },
-    "chicken-tikka-masala": {
-        "name": "Chicken Tikka Masala",
-        "reference": "reference.jpg",
-        "expected": "steamed basmati rice on the left and lower right, chicken "
-                    "pieces in orange-red tikka masala curry through the "
-                    "centre, scattered fresh cilantro leaves over the plate, "
-                    "on a teal ceramic plate",
-        "bands": {
-            "curry": {"lo": (5, 120, 120), "hi": (18, 255, 255), "mode": "zone"},
-            "cilantro": {"lo": (35, 80, 40), "hi": (75, 255, 255),
-                         "mode": "scatter"},
-        },
-    },
-}
-DEFAULT_DISH = "sesame-beef-bowl"
+# demo unit labels (context panel); one plated dish per frame at the pass
+DISH_NAME = "Sesame Beef Bowl"
 BATCH = "PASS LINE A"
 QUADRANT = "Full plate"
 
+CKPT = ROOT / "results/Patchcore/dish/latest/weights/lightning/model.ckpt"
+CALIB = ROOT / "data/calibration.json"
 RUNS = ROOT / "runs"
 DISH_SEQ = RUNS / ".dish_seq"
 
-_models = {}          # slug -> (model, ckpt mtime)
+_model = None
+_model_mtime = None
 
 
-def dish_cfg(dish):
-    if dish not in DISHES:
-        raise ValueError(f"unknown dish {dish!r}; menu: {sorted(DISHES)}")
-    return DISHES[dish]
-
-
-def dish_ckpt(dish):
-    dish_cfg(dish)
-    return ROOT / f"results/{dish}/model.ckpt"
-
-
-def dish_calib(dish):
-    dish_cfg(dish)
-    return ROOT / f"data/dishes/{dish}/calibration.json"
-
-
-def dish_reference_path(dish):
-    return ROOT / f"data/dishes/{dish}" / dish_cfg(dish)["reference"]
-
-
-def get_model(dish=DEFAULT_DISH):
-    """Loads once per dish, and reloads automatically if that checkpoint
-    changes on disk (retraining while the server stays up)."""
-    ckpt = dish_ckpt(dish)
-    if not ckpt.exists():
-        raise RuntimeError(f"no model for {dish} at {ckpt}; "
-                           f"run `make bank DISH={dish}` first")
-    mtime = ckpt.stat().st_mtime
-    cached = _models.get(dish)
-    if cached is None or cached[1] != mtime:
+def get_model():
+    """Loads once, and reloads automatically if the checkpoint changes on disk
+    (e.g. `make bank` re-run at the venue while the server stays up)."""
+    global _model, _model_mtime
+    if not CKPT.exists():
+        raise RuntimeError(f"no model at {CKPT}; run `make bank` first")
+    mtime = CKPT.stat().st_mtime
+    if _model is None or mtime != _model_mtime:
         from anomalib.models import Patchcore
-        model = Patchcore.load_from_checkpoint(
-            str(ckpt), map_location="cpu", weights_only=False).eval()
-        _models[dish] = (model, mtime)
-    return _models[dish][0]
+        _model = Patchcore.load_from_checkpoint(
+            str(CKPT), map_location="cpu", weights_only=False).eval()
+        _model_mtime = mtime
+    return _model
 
 
 def model_fallback_threshold(model):
@@ -136,24 +87,22 @@ def model_fallback_threshold(model):
     return None
 
 
-def read_threshold(dish=DEFAULT_DISH):
-    calib = dish_calib(dish)
-    if calib.exists():
-        data = json.loads(calib.read_text())
+def read_threshold():
+    if CALIB.exists():
+        data = json.loads(CALIB.read_text())
         if "threshold" in data:
             return float(data["threshold"]), "calibration.json"
-    fallback = model_fallback_threshold(get_model(dish))
+    fallback = model_fallback_threshold(get_model())
     if fallback is not None:
         return fallback, "model adaptive (UNCALIBRATED - run --calibrate)"
-    raise RuntimeError(f"no threshold for {dish}; run "
-                       f"`python inspection/serve.py --calibrate --dish {dish}`")
+    raise RuntimeError("no threshold available; run `python inspection/serve.py --calibrate`")
 
 
-def score_image(bgr, dish=DEFAULT_DISH):
+def score_image(bgr):
     """Returns (raw_score, full_res_anomaly_map)."""
     import torch
     import torch.nn.functional as F
-    model = get_model(dish)
+    model = get_model()
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     x = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
     with torch.no_grad():
@@ -306,10 +255,10 @@ def build_findings(blobs, frame_w, frame_h):
     return findings
 
 
-def run_inspection(bgr, dish_id=None, dish=DEFAULT_DISH):
+def run_inspection(bgr, dish_id=None):
     bgr = ingest(bgr)                     # fixed crop; no-op on already-cropped input
-    score, full_map = score_image(bgr, dish)
-    threshold, threshold_source = read_threshold(dish)
+    score, full_map = score_image(bgr)
+    threshold, threshold_source = read_threshold()
     verdict = "defect" if score >= threshold else "pass"
     # localization uses the anomalib pixel threshold (dataset-anchored), which
     # keeps regions tight instead of swallowing the frame on high-score images
@@ -321,8 +270,7 @@ def run_inspection(bgr, dish_id=None, dish=DEFAULT_DISH):
     cosmetic_regions = []
     if findings:
         from explain import explain_findings
-        explain_findings(bgr, reference_frame(dish)[0], blobs, findings,
-                         dish_desc=dish_cfg(dish)["expected"])
+        explain_findings(bgr, reference_frame()[0], blobs, findings)
         if os.environ.get("SEEFU_VISION_GATE", "1") != "0":
             # PatchCore only knows "different"; comparative vision decides
             # "matters". Cosmetic regions (stickers/labels/reflections/things
@@ -349,12 +297,11 @@ def run_inspection(bgr, dish_id=None, dish=DEFAULT_DISH):
     # closes that hole, and vision has to confirm before a plate is held.
     ring_blobs = []
     if verdict == "pass" and os.environ.get("SEEFU_INGREDIENT_CHECK", "1") != "0":
-        candidates = hue_presence_blobs(bgr, dish)
+        candidates = hue_presence_blobs(bgr)
         if candidates:
             from explain import explain_findings
             cand_findings = build_findings(candidates, w, h)
-            explain_findings(bgr, reference_frame(dish)[0], candidates, cand_findings,
-                             dish_desc=dish_cfg(dish)["expected"])
+            explain_findings(bgr, reference_frame()[0], candidates, cand_findings)
             kept = [(b, f) for b, f in zip(candidates, cand_findings)
                     if not f.get("cosmetic") and f.get("source") == "vision"]
             if kept:
@@ -401,8 +348,6 @@ def run_inspection(bgr, dish_id=None, dish=DEFAULT_DISH):
                                 threshold, ring_blobs)
     return {
         "dish_id": dish_id or next_dish_id(),
-        "dish": dish,
-        "dish_name": dish_cfg(dish)["name"],
         "score": round(score, 4),
         "threshold": round(threshold, 4),
         "threshold_source": threshold_source,
@@ -417,30 +362,21 @@ def run_inspection(bgr, dish_id=None, dish=DEFAULT_DISH):
     }
 
 
-_references = {}
+_reference = None
 
 
-def dish_normal_dir(dish):
-    dish_cfg(dish)
-    return ROOT / f"data/dishes/{dish}/normal"
-
-
-def dish_normals(dish):
-    d = dish_normal_dir(dish)
-    return sorted(p for p in d.glob("*") if p.suffix.lower() in (".png", ".jpg", ".jpeg"))
-
-
-def reference_frame(dish=DEFAULT_DISH):
-    """The golden plate for the dish (its reference image, falling back to the
-    first normal) + its plate bbox: the canvas uploads are composited onto.
-    The plate is found by color distance from the border background, which
-    survives any backdrop (checkerboard cutout, counter, tray). Cached per dish."""
-    if dish not in _references:
-        ref_path = dish_reference_path(dish)
+def reference_frame():
+    """The golden plate (data/reference.png, falling back to the first normal)
+    + its bowl bbox: the canvas uploads are composited onto. The bowl is found
+    by color distance from the border background, which survives any backdrop
+    (checkerboard cutout, counter, tray). Cached after first use."""
+    global _reference
+    if _reference is None:
+        ref_path = ROOT / "data/reference.png"
         if not ref_path.exists():
-            frames = dish_normals(dish)
+            frames = sorted((ROOT / "data/normal").glob("*.png"))
             if not frames:
-                raise RuntimeError(f"no reference and no normals for {dish}; "
+                raise RuntimeError("no data/reference.png and data/normal is empty; "
                                    "add the normal set first")
             ref_path = frames[0]
         img = cv2.imread(str(ref_path))
@@ -459,35 +395,36 @@ def reference_frame(dish=DEFAULT_DISH):
                           cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
         else:
             bbox = (0, 0, w, h)
-        _references[dish] = (img, bbox)
-    return _references[dish]
+        _reference = (img, bbox)
+    return _reference
 
 
-_mat_colors = {}
+_mat_color = None
 
 
-def training_mat_color(dish=DEFAULT_DISH):
-    """Median border color of the dish's normal set - the backdrop the bank knows."""
-    if dish not in _mat_colors:
+def training_mat_color():
+    """Median border color of the normal set - the rig mat the bank knows."""
+    global _mat_color
+    if _mat_color is None:
         samples = []
-        for p in dish_normals(dish)[:6]:
+        for p in sorted((ROOT / "data/normal").glob("*.png"))[:6]:
             img = cv2.imread(str(p))
             if img is None:
                 continue
             border = np.concatenate([img[:20].reshape(-1, 3), img[-20:].reshape(-1, 3),
                                      img[:, :20].reshape(-1, 3), img[:, -20:].reshape(-1, 3)])
             samples.append(np.median(border, axis=0))
-        _mat_colors[dish] = (np.median(samples, axis=0) if samples
-                             else np.array([80.0, 77.0, 83.0]))
-    return _mat_colors[dish]
+        _mat_color = (np.median(samples, axis=0) if samples
+                      else np.array([80.0, 77.0, 83.0]))
+    return _mat_color
 
 
-def register_to_reference(frame, dish=DEFAULT_DISH):
+def register_to_reference(frame):
     """Golden-dish registration: ORB feature match + RANSAC homography warps
     the uploaded photo into pixel alignment with the reference frame (the dish
     is planar, so a homography is exact - handles any rotation, tilt, scale).
     Returns (aligned, H) or None when registration fails."""
-    ref, _ = reference_frame(dish)
+    ref, _ = reference_frame()
     scale = min(1.0, 1600.0 / max(frame.shape[:2]))
     small = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1.0 else frame
     orb = cv2.ORB_create(5000)
@@ -515,7 +452,7 @@ def register_to_reference(frame, dish=DEFAULT_DISH):
     return out, H
 
 
-def normalize_upload(frame, dish=DEFAULT_DISH):
+def normalize_upload(frame):
     """Off-pass photos (foreign background, any orientation/scale) are recomposed
     to training conditions before inspection: register to the golden plate, or
     segment the dish from the background sampled at the borders and composite it
@@ -524,14 +461,14 @@ def normalize_upload(frame, dish=DEFAULT_DISH):
     backdrop). Frames already at training geometry skip this.
     Returns (frame, was_normalized, transform)."""
     h, w = frame.shape[:2]
-    ref, _ = reference_frame(dish)
+    ref, _ = reference_frame()
     ref_h, ref_w = ref.shape[:2]
     if (w, h) == (ref_w, ref_h):
         return frame, False, None
 
     # first choice: exact golden-dish registration; the composite path below
     # is the fallback when feature matching fails (blurry/occluded photos)
-    registered = register_to_reference(frame, dish)
+    registered = register_to_reference(frame)
     if registered is not None:
         aligned, H = registered
         return aligned, True, {"homography": H, "original": frame}
@@ -559,7 +496,7 @@ def normalize_upload(frame, dish=DEFAULT_DISH):
 
     # the reference plate is square; only rotate when the crop's aspect clearly
     # disagrees with the reference (a plate shot is orientation-free otherwise)
-    _, (_, _, rw0, rh0) = reference_frame(dish)
+    _, (_, _, rw0, rh0) = reference_frame()
     ref_portrait = rh0 > rw0 * 1.1
     was_portrait = dish.shape[0] > dish.shape[1] * 1.1 and not ref_portrait
     if was_portrait:
@@ -569,7 +506,7 @@ def normalize_upload(frame, dish=DEFAULT_DISH):
     # composite onto a REAL training frame, dish scaled into the exact bbox
     # where the trained dish sits - real mat texture, training geometry
     # (a flat synthetic mat and off-position dish both read as anomalies)
-    canvas, (rx, ry, rw, rh) = reference_frame(dish)
+    canvas, (rx, ry, rw, rh) = reference_frame()
     canvas = canvas.copy()
     # exact-fill both axes: same physical dish, <3% aspect distortion, and the
     # reference dish underneath is fully covered (no ghost edges = no false heat)
@@ -594,47 +531,33 @@ def normalize_upload(frame, dish=DEFAULT_DISH):
     return canvas, True, {"rot90cw": was_portrait, "rot180": rot180}
 
 
-def hue_presence_blobs(bgr, dish=DEFAULT_DISH, grid=6, expect=0.18,
-                       missing=0.25, near=0.3, scatter_missing=0.25):
+HUE_BANDS = {
+    # BGR-independent HSV bands for the dish's color-coded ingredients. Green
+    # covers scallion garnish and broccoli; red covers the chili flecks.
+    "green": ((30, 60, 50), (95, 255, 255)),
+    "red": ((0, 120, 80), (12, 255, 255)),
+}
+
+
+def hue_presence_blobs(bgr, grid=6, expect=0.18, missing=0.25, near=0.3):
     """Positional ingredient check: PatchCore matches texture patches with no
     memory of WHERE they belong, so a plate whose garnish was replaced by
-    plausible beef texture sails under the score. This check is the antidote,
-    driven by the dish's ingredient profile (DISHES[dish]["bands"]):
-      zone bands    - grid cells where the golden plate has meaningful coverage
-                      and the upload lost it in the cell AND its neighborhood
-                      (normal plating shifts do not trigger)
-      scatter bands - small strewn elements (herb garnish) checked as total
-                      plate coverage, because no single cell ever holds enough
-    Vision must confirm a candidate before it can hold a plate.
+    plausible beef texture sails under the score. This check is the antidote:
+    in registered space, any grid cell where the golden plate has meaningful
+    coverage of an ingredient hue and the upload has lost it (in the cell AND
+    its neighborhood, so normal plating shifts do not trigger) becomes a
+    candidate blob. Vision must confirm a candidate before it can hold a plate.
     """
-    ref, (rx, ry, rw, rh) = reference_frame(dish)
+    ref, (rx, ry, rw, rh) = reference_frame()
     if bgr.shape[:2] != ref.shape[:2]:
         return []
-    reg = register_to_reference(bgr, dish)
+    reg = register_to_reference(bgr)
     frame = reg[0] if reg is not None else bgr
     hsv_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2HSV)
     hsv_up = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h, w = bgr.shape[:2]
     flagged = np.zeros((grid, grid), np.uint8)
     coverage = np.zeros((grid, grid), np.float32)
-    scatter_blobs = []
-    zone_bands = []
-    for band in dish_cfg(dish)["bands"].values():
-        lo, hi = tuple(band["lo"]), tuple(band["hi"])
-        if band.get("mode") == "scatter":
-            mref = cv2.inRange(hsv_ref, lo, hi) > 0
-            mup = cv2.inRange(hsv_up, lo, hi) > 0
-            plate_ref = float(mref[ry:ry + rh, rx:rx + rw].mean())
-            plate_up = float(mup[ry:ry + rh, rx:rx + rw].mean())
-            if plate_ref >= 0.01 and plate_up < scatter_missing * plate_ref:
-                scatter_blobs.append({
-                    "cx": round((rx + rw / 2) / w, 4),
-                    "cy": round((ry + rh / 2) / h, 4),
-                    "r": round(0.3 * max(rw, rh) / max(w, h), 4),
-                    "score": round(plate_ref, 3)})
-        else:
-            zone_bands.append((lo, hi))
-    for lo, hi in zone_bands:
+    for lo, hi in HUE_BANDS.values():
         mref = cv2.inRange(hsv_ref, lo, hi) > 0
         mup = cv2.inRange(hsv_up, lo, hi) > 0
         for i in range(grid):
@@ -653,9 +576,10 @@ def hue_presence_blobs(bgr, dish=DEFAULT_DISH, grid=6, expect=0.18,
                     flagged[i, j] = 1
                     coverage[i, j] = max(coverage[i, j], cov_ref)
     if not flagged.any():
-        return scatter_blobs[:3]
+        return []
+    h, w = bgr.shape[:2]
     num, labels = cv2.connectedComponents(flagged, 8)
-    blobs = list(scatter_blobs)
+    blobs = []
     for k in range(1, num):
         ys, xs = np.nonzero(labels == k)
         cy = ry + (float(ys.mean()) + 0.5) * rh / grid
@@ -689,19 +613,13 @@ def image_b64(bgr, max_w=960):
 
 
 def context_message():
-    menu = {slug: {"name": cfg["name"],
-                   "bank": "Ready" if dish_ckpt(slug).exists() else "Not built",
-                   "calibration": "Locked" if dish_calib(slug).exists() else "Not set"}
-            for slug, cfg in DISHES.items()}
     return {
         "type": "context",
-        "dish": DISHES[DEFAULT_DISH]["name"],
-        "menu": menu,
-        "default_dish": DEFAULT_DISH,
+        "dish": DISH_NAME,
         "batch": BATCH,
         "quadrant": QUADRANT,
-        "bank": menu[DEFAULT_DISH]["bank"],
-        "calibration": menu[DEFAULT_DISH]["calibration"],
+        "bank": "Ready" if CKPT.exists() else "Not built",
+        "calibration": "Locked" if CALIB.exists() else "Not set",
         "memory": "Connected" if os.environ.get("XTRACE_API_KEY") else "Off",
     }
 
@@ -799,13 +717,13 @@ def undo_display_transform(result, transform):
     result["blobs"] = blobs
 
 
-def process_inspection(frame, dish_id=None, transform=None, dish=DEFAULT_DISH):
+def process_inspection(frame, dish_id=None, transform=None):
     """Full pipeline for one frame: inspect, emit ws messages, file the case."""
     frame = ingest(frame)
     dish_id = dish_id or next_dish_id()
     hub.emit({"type": "inspection_start", "dish_id": dish_id})
 
-    result = run_inspection(frame, dish_id, dish)
+    result = run_inspection(frame, dish_id)
     if transform:
         undo_display_transform(result, transform)
     label_locations(result)               # after the undo: operator-space coords
@@ -883,7 +801,7 @@ def verify_and_mark(case_id):
 def build_app():
     import asyncio
 
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 
     app = FastAPI(title="Seefu plate check")
 
@@ -1050,12 +968,9 @@ def build_app():
     @app.post("/memory/correction")
     def memory_correction(body: dict):
         text = (body or {}).get("text", "").strip()
-        dish = (body or {}).get("dish", DEFAULT_DISH)
-        if dish not in DISHES:
-            raise HTTPException(400, f"unknown dish {dish!r}")
         if not text:
             raise HTTPException(400, "body must be {\"text\": \"...\"}")
-        resp = memory.record_correction(text, dish_cfg(dish)["name"])
+        resp = memory.record_correction(text)
         if resp is None and not memory.enabled():
             raise HTTPException(503, "XTRACE_API_KEY not set")
         return {"recorded": resp is not None,
@@ -1065,14 +980,11 @@ def build_app():
     # ---------------- retraining ----------------
 
     @app.post("/train/upload")
-    def train_upload(files: list[UploadFile] = File(...),
-                     dish: str = Form(DEFAULT_DISH)):
-        """Stage new known-good plate photos into the dish's normal set. The
-        model does not change until /train/rebuild runs."""
-        if dish not in DISHES:
-            raise HTTPException(400, f"unknown dish {dish!r}")
+    def train_upload(files: list[UploadFile] = File(...)):
+        """Stage new known-good plate photos into the normal set. The model
+        does not change until /train/rebuild runs."""
         added = []
-        normal_dir = dish_normal_dir(dish)
+        normal_dir = ROOT / "data/normal"
         normal_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         for i, f in enumerate(files):
@@ -1083,17 +995,14 @@ def build_app():
             name = f"dish_new_{stamp}_{i:02d}.png"
             cv2.imwrite(str(normal_dir / name), img)
             added.append(name)
-        return {"staged": added, "dish": dish,
-                "normal_count": len(dish_normals(dish)),
+        return {"staged": added, "normal_count": len(list(normal_dir.glob('*.png'))),
                 "next": "POST /train/rebuild to retrain on the updated set"}
 
     @app.post("/train/rebuild")
-    def train_rebuild(dish: str = Form(DEFAULT_DISH)):
-        """Retrain the dish's memory bank in the background, then recalibrate
-        its threshold. The serving model hot-reloads on the new checkpoint's
-        mtime; the server never goes down."""
-        if dish not in DISHES:
-            raise HTTPException(400, f"unknown dish {dish!r}")
+    def train_rebuild():
+        """Retrain the memory bank on data/normal in the background, then
+        recalibrate the threshold. The serving model hot-reloads on the new
+        checkpoint's mtime; the server never goes down."""
         if _retrain["state"] == "running":
             raise HTTPException(409, "a rebuild is already running")
         import subprocess
@@ -1105,10 +1014,9 @@ def build_app():
             log = (RUNS / "retrain.log").open("w")
             try:
                 for args, detail in (
-                        ([sys.executable, "inspection/train_bank.py",
-                          "--dish", dish], f"training {dish}"),
-                        ([sys.executable, "inspection/serve.py", "--calibrate",
-                          "--dish", dish], "recalibrating threshold")):
+                        ([sys.executable, "inspection/train_bank.py"], "training"),
+                        ([sys.executable, "inspection/serve.py", "--calibrate"],
+                         "recalibrating threshold")):
                     _retrain["detail"] = detail
                     proc = subprocess.run(args, cwd=ROOT, stdout=log,
                                           stderr=subprocess.STDOUT, timeout=1800)
@@ -1132,41 +1040,27 @@ def build_app():
         return {"started": True, "watch": "/train/status"}
 
     @app.get("/train/status")
-    def train_status(dish: str = DEFAULT_DISH):
-        if dish not in DISHES:
-            raise HTTPException(400, f"unknown dish {dish!r}")
+    def train_status():
         out = dict(_retrain)
-        ckpt = dish_ckpt(dish)
-        out["dish"] = dish
-        out["ckpt_exists"] = ckpt.exists()
-        if ckpt.exists():
+        out["ckpt_exists"] = CKPT.exists()
+        if CKPT.exists():
             out["ckpt_mtime"] = time.strftime("%H:%M:%S",
-                                              time.localtime(ckpt.stat().st_mtime))
-        out["normal_count"] = len(dish_normals(dish))
+                                              time.localtime(CKPT.stat().st_mtime))
+        out["normal_count"] = len(list((ROOT / "data/normal").glob("*.png")))
         return out
 
     @app.get("/health")
     def health():
-        dishes = {}
-        for slug in DISHES:
-            try:
-                thr, source = read_threshold(slug)
-            except RuntimeError:
-                thr, source = None, "missing"
-            dishes[slug] = {"ckpt": dish_ckpt(slug).exists(), "threshold": thr,
-                            "threshold_source": source,
-                            "model_loaded": slug in _models}
-        first = dishes[DEFAULT_DISH]
-        return {"status": "ok", "dishes": dishes, "menu": sorted(DISHES),
-                "ckpt": first["ckpt"], "model_loaded": first["model_loaded"],
-                "threshold": first["threshold"],
-                "threshold_source": first["threshold_source"]}
+        try:
+            threshold, source = read_threshold()
+        except RuntimeError:
+            threshold, source = None, "missing"
+        return {"status": "ok", "ckpt": CKPT.exists(), "model_loaded": _model is not None,
+                "threshold": threshold, "threshold_source": source}
 
     @app.post("/inspect")
     def inspect(file: UploadFile | None = File(None), live: int = 0,
-                dish_id: str | None = None, dish: str = Form(DEFAULT_DISH)):
-        if dish not in DISHES:
-            raise HTTPException(400, f"unknown dish {dish!r}; menu: {sorted(DISHES)}")
+                dish_id: str | None = None):
         # sync def on purpose: FastAPI runs it in the threadpool, keeping the
         # event loop free so ws messages stream out DURING the inspection
         # (async def here made start/result/case arrive in one burst at the end)
@@ -1183,13 +1077,12 @@ def build_app():
                 raise HTTPException(400, "could not decode image")
             RUNS.mkdir(exist_ok=True)
             cv2.imwrite(str(RUNS / f"upload_{time.strftime('%H%M%S')}.png"), frame)
-            frame, was_normalized, transform = normalize_upload(frame, dish)
+            frame, was_normalized, transform = normalize_upload(frame)
         else:
             raise HTTPException(400, "upload a file or pass ?live=1")
         try:
             result = process_inspection(frame, dish_id,
-                                        transform if file is not None else None,
-                                        dish=dish)
+                                        transform if file is not None else None)
             if file is not None and was_normalized:
                 result["normalized_upload"] = True
                 result["note"] = ((result.get("note") or "") +
@@ -1206,19 +1099,19 @@ def build_app():
 
 # ---------------- threshold calibration ----------------
 
-def calibrate(dish=DEFAULT_DISH):
+def calibrate():
     def scores_for(folder):
         out = []
         for p in sorted(Path(folder).iterdir()):
             if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
                 continue
             img = ingest(cv2.imread(str(p)))
-            s, _ = score_image(img, dish)
+            s, _ = score_image(img)
             out.append((s, p.name))
         return sorted(out)
 
-    normals = scores_for(dish_normal_dir(dish))
-    defect_dir = ROOT / f"data/dishes/{dish}/test_defect"
+    normals = scores_for(ROOT / "data/normal")
+    defect_dir = ROOT / "data/test_defect"
     defects = scores_for(defect_dir) if defect_dir.exists() else []
 
     print(f"\nNORMAL scores ({len(normals)}):")
@@ -1242,29 +1135,26 @@ def calibrate(dish=DEFAULT_DISH):
               "proposing max normal + 15% margin)")
     print(f"proposed threshold: {proposed:.4f}")
 
-    calib = dish_calib(dish)
-    existing = json.loads(calib.read_text()) if calib.exists() else {}
+    existing = json.loads(CALIB.read_text()) if CALIB.exists() else {}
     existing.update({
         "threshold": round(proposed, 4),
         "normal_max": round(max_normal, 4),
         "defect_min": round(defects[0][0], 4) if defects else None,
         "calibrated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     })
-    calib.write_text(json.dumps(existing, indent=2) + "\n")
-    print(f"written to {calib} (human blesses this number at checkpoint 2)")
+    CALIB.write_text(json.dumps(existing, indent=2) + "\n")
+    print(f"written to {CALIB} (human blesses this number at checkpoint 2)")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Seefu inspection service")
     ap.add_argument("--calibrate", action="store_true",
                     help="score normal + test_defect sets, propose threshold, exit")
-    ap.add_argument("--dish", default=DEFAULT_DISH, choices=sorted(DISHES),
-                    help="which dish to calibrate")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
 
     if args.calibrate:
-        calibrate(args.dish)
+        calibrate()
         return
 
     import uvicorn

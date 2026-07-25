@@ -64,7 +64,7 @@ img{border-radius:0}
 /* Both panels are one fixed height and scroll inside, so the console keeps the
    same shape from plate to plate - controls do not move under the operator's
    hand when a plate happens to have more findings. */
-#secIssue,#secMemory{height:min(72vh,640px);min-height:380px}
+#secIssue,#secMemory{height:min(78vh,760px);min-height:520px}
 #secIssue .pbody,#secMemory .pbody{overflow-y:auto}
 
 /* ---------- inspect a dish ---------- */
@@ -92,11 +92,6 @@ button.act:disabled{cursor:not-allowed;background:var(--paper);
 .statusline.busy{color:var(--accent);border-left-color:var(--accent)}
 .statusline.bad{color:var(--fail);border-left-color:var(--fail)}
 input[type=file]{display:none}
-.dishpick{display:flex;align-items:center;gap:8px;border:1px solid var(--line);
-  background:var(--paper);padding:0 0 0 12px}
-.dishpick span{font-size:9.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
-.dishpick select{font:inherit;font-size:11.5px;border:0;border-left:1px solid var(--line);
-  background:var(--paper);padding:12px 10px;cursor:pointer;outline-offset:-2px}
 
 /* ---------- issue ---------- */
 .verdict{display:flex;align-items:center;gap:13px;border:1px solid var(--line);
@@ -116,6 +111,10 @@ input[type=file]{display:none}
 .verdict.err .gly{border-color:var(--warn);color:var(--warn)}
 .verdict.err .word{color:var(--warn)}
 
+.caseline{border:1px solid var(--line-soft);background:var(--panel);
+  padding:8px 11px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.caseline b{color:var(--ink);font-weight:700;letter-spacing:.06em}
+.caseline .note{display:block;margin-top:5px;font-family:var(--sans);font-size:11.5px;line-height:1.5}
 
 .flabel{font-size:9.5px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
   color:var(--faint);border-bottom:1px solid var(--line-soft);
@@ -145,6 +144,9 @@ input[type=file]{display:none}
   color:var(--faint);margin-top:6px}
 
 /* ---------- kitchen memory ---------- */
+.membar{flex:0 0 auto;border-bottom:1px solid var(--line);background:var(--panel);
+  padding:9px 13px;font-size:10.5px;line-height:1.55;color:var(--muted)}
+.membar b{color:var(--ink);font-weight:600}
 .memblock{margin-bottom:14px}
 .meminsight{border:1px solid var(--accent);border-left:3px solid var(--accent);
   background:#EFF4FF;padding:10px 12px;font-size:12.5px;line-height:1.55;margin-bottom:8px}
@@ -154,6 +156,10 @@ input[type=file]{display:none}
   background:var(--warn-wash);padding:9px 11px;font-size:12px;line-height:1.5;margin-bottom:8px}
 .memlesson .k{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;
   text-transform:uppercase;color:var(--warn);margin-bottom:4px}
+.memitem{border:1px solid var(--line-soft);background:var(--panel);
+  padding:8px 11px;margin-bottom:6px;font-size:11.5px;line-height:1.5}
+.memitem .mt{font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:3px}
 .membrief{white-space:pre-wrap;border:1px solid var(--line);background:var(--panel);
   padding:11px 12px;font-size:12px;line-height:1.6}
 .memrow{display:flex;gap:8px;margin-top:8px}
@@ -184,6 +190,22 @@ input[type=file]{display:none}
 .callrow.bad #phone{color:var(--fail)}
 .callrow.busy .callgly{border-color:var(--accent);color:var(--accent)}
 .callrow.busy #phone{color:var(--accent)}
+.voiceline{margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--muted);
+  border:1px solid var(--line-soft);background:var(--panel);padding:7px 10px;display:none}
+.voiceline.on{display:block}
+.voiceline b{color:var(--ink);font-weight:700;letter-spacing:.06em}
+.feed{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:10px;display:none}
+.feed.on{display:block}
+.feed .flab{font-size:9.5px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:7px}
+.feed ul{list-style:none}
+.feed li{display:grid;grid-template-columns:66px 108px 1fr;gap:10px;
+  font-family:var(--mono);font-size:11px;color:var(--ink);padding:3px 0;
+  border-bottom:1px solid var(--line-soft)}
+.feed li:last-child{border-bottom:0}
+.feed .t{color:var(--faint)}
+.feed .s{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:640px){.feed li{grid-template-columns:1fr}.feed .s{white-space:normal}}
 
 /* ---------- drag and drop ---------- */
 body.drag .wrap{outline:2px dashed var(--accent);outline-offset:6px}
@@ -219,13 +241,6 @@ body.drag #dropHint{display:grid}
         </div>
         <div class="controls">
           <div class="btnrow">
-            <label class="dishpick">
-              <span>Dish</span>
-              <select id="dishSel">
-                <option value="sesame-beef-bowl">Sesame Beef Bowl</option>
-                <option value="chicken-tikka-masala">Chicken Tikka Masala</option>
-              </select>
-            </label>
             <button class="act" id="btnUpload" type="button">Upload image</button>
             <button class="act primary" id="btnRun" type="button" disabled>Run inspection</button>
           </div>
@@ -314,8 +329,9 @@ body.drag #dropHint{display:grid}
         <button class="act" id="btnRebuild" type="button">Rebuild memory bank</button>
         <input type="file" id="goodIn" accept="image/png,image/jpeg" multiple>
       </div>
-      <div class="statusline" id="trainStatus" style="margin-top:10px">Add good plates,
-        rebuild, and the model hot-swaps live.</div>
+      <div class="statusline" id="trainStatus" style="margin-top:10px">The bank learns only from
+        known-good plates. Stage new photos, rebuild, and the serving model hot-swaps when
+        training finishes. The server never goes down.</div>
     </div>
   </section>
 
@@ -552,7 +568,6 @@ async function inspect(){
   setCall("","—","No call placed.");setVoice(null);
   try{
     const fd=new FormData();fd.append("file",pendingFile);
-    fd.append("dish",$("dishSel").value);
     const r=await fetch("/inspect",{method:"POST",body:fd});
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||d.error||("HTTP "+r.status));
@@ -578,9 +593,6 @@ async function inspect(){
   $("btnRun").disabled=!pendingFile;busy=false;
 }
 
-$("dishSel").addEventListener("change",()=>{
-  $("idBoard").textContent=$("dishSel").options[$("dishSel").selectedIndex].text;
-});
 $("btnUpload").addEventListener("click",()=>$("fileIn").click());
 $("btnRun").addEventListener("click",()=>inspect());
 $("fileIn").addEventListener("change",()=>{
@@ -658,8 +670,7 @@ $("btnTeach").addEventListener("click",async()=>{
   $("btnTeach").disabled=true;
   try{
     const r=await fetch("/memory/correction",{method:"POST",
-      headers:{"content-type":"application/json"},
-      body:JSON.stringify({text,dish:$("dishSel").value})});
+      headers:{"content-type":"application/json"},body:JSON.stringify({text})});
     $("memTeach").value="";
     $("memTeach").placeholder=r.ok
       ?"Stored. It applies to future plates of this dish."
@@ -675,7 +686,6 @@ $("goodIn").addEventListener("change",async()=>{
   const files=[...$("goodIn").files];$("goodIn").value="";
   if(!files.length)return;
   const fd=new FormData();files.forEach(f=>fd.append("files",f));
-  fd.append("dish",$("dishSel").value);
   $("trainStatus").className="statusline busy";
   $("trainStatus").textContent="Staging "+files.length+" photo(s)...";
   try{
@@ -693,8 +703,7 @@ $("goodIn").addEventListener("change",async()=>{
 $("btnRebuild").addEventListener("click",async()=>{
   $("btnRebuild").disabled=true;
   try{
-    const tfd=new FormData();tfd.append("dish",$("dishSel").value);
-    const r=await fetch("/train/rebuild",{method:"POST",body:tfd});
+    const r=await fetch("/train/rebuild",{method:"POST"});
     if(!r.ok){const d=await r.json();throw new Error(d.detail||("HTTP "+r.status))}
     $("trainTag").textContent="Running";
     $("trainStatus").className="statusline busy";

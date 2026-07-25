@@ -129,9 +129,8 @@ def inspection_text(result):
     XTrace extracts facts from conversational text, not structured rows, so
     this sentence IS the schema."""
     dish = result.get("dish_id", "unknown")
-    dish_name = result.get("dish_name", "the dish")
     verdict = result.get("verdict", "?")
-    parts = [f"Plate check for dish {dish} ({dish_name}) at {station_user()}: "
+    parts = [f"Plate check for dish {dish} (sesame beef bowl) at {station_user()}: "
              f"verdict {verdict.upper()}, anomaly score "
              f"{result.get('score')} against threshold {result.get('threshold')}."]
     for f in result.get("findings", []):
@@ -168,7 +167,7 @@ def record_inspection(result):
 CORRECTION_MARK = "Chef standing instruction"
 
 
-def record_correction(text, dish_name="the dish"):
+def record_correction(text):
     """A chef's correction becomes a persistent instruction. XTrace's extractor
     decides the memory type itself and files short declaratives as facts, so
     the text carries a distinctive marker that recall can key on; outcome and
@@ -176,7 +175,7 @@ def record_correction(text, dish_name="the dish"):
     lesson, in which case the unmetered trigger endpoint also surfaces it."""
     if not enabled():
         return None
-    content = f"{CORRECTION_MARK} for the {dish_name} at {station_user()}: {text}"
+    content = f"{CORRECTION_MARK} for the sesame beef bowl at {station_user()}: {text}"
     return _post("/v1/memories", {
         "messages": [{"role": "user", "content": content,
                       "date": datetime.now(timezone.utc).isoformat()}],
@@ -265,7 +264,7 @@ def search(query, mode="retrieve", limit=8, include=None):
     return _post("/v1/memories/search", payload, timeout=15.0)
 
 
-def trigger_lessons(dish_id, dish_name="the dish"):
+def trigger_lessons(dish_id):
     """Pre-verdict recall of chef corrections for this dish/station.
 
     Two paths, cheap first: the unmetered /trigger endpoint returns directive
@@ -277,7 +276,7 @@ def trigger_lessons(dish_id, dish_name="the dish"):
     lessons = []
     resp = _post("/v1/memories/trigger", {
         "action": {"tool": "inspect_dish",
-                   "args": {"dish": dish_name, "station": STATION,
+                   "args": {"dish": "sesame beef bowl", "station": STATION,
                             "dish_id": str(dish_id)}},
         "user_id": station_user(),
         "agent_id": AGENT_ID,
@@ -286,14 +285,8 @@ def trigger_lessons(dish_id, dish_name="the dish"):
         data = resp.get("data") or resp.get("memories") or []
         lessons = [m.get("text", "") for m in data if m.get("text")]
     if not lessons:
-        resp = search(f"{CORRECTION_MARK} for the {dish_name}", mode="retrieve",
-                      limit=6, include=["fact"])
-        if resp:
-            low_name = dish_name.lower()
-            ranked = [m for m in (resp.get("data") or [])
-                      if low_name in (m.get("text", "").lower())]
-            if ranked:
-                resp = dict(resp, data=ranked)
+        resp = search(f"{CORRECTION_MARK} for this dish", mode="retrieve",
+                      limit=5, include=["fact"])
         if resp:
             mark = CORRECTION_MARK.lower()
             lessons = [m.get("text", "") for m in (resp.get("data") or [])
@@ -310,8 +303,7 @@ def recall_insight(result):
         return None
     findings = result.get("findings") or []
     if result.get("verdict") != "defect" or not findings:
-        lessons = trigger_lessons(result.get("dish_id"),
-                              result.get("dish_name", "the dish"))
+        lessons = trigger_lessons(result.get("dish_id"))
         watch = watch_items()
         if lessons or watch:
             return {"recurrences": 0, "insight": None, "lessons": lessons,
@@ -329,8 +321,7 @@ def recall_insight(result):
         matches = [m for m in (resp.get("data") or [])
                    if (m.get("score") or 0) >= 0.4
                    and any(w in (m.get("text", "").lower()) for w in problem_words)]
-    lessons = trigger_lessons(result.get("dish_id"),
-                              result.get("dish_name", "the dish"))
+    lessons = trigger_lessons(result.get("dish_id"))
     n = len(matches)
     if n >= 2:
         insight = (f"This failure matches {n} earlier plates in kitchen memory. "
