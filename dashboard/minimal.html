@@ -565,7 +565,7 @@ async function inspect(){
   $("btnRun").disabled=$("btnUpload").disabled=true;
   setStatus("busy","Inspecting "+pendingFile.name+"...");
   beginInspection(null);
-  setCall("","—","No call placed.");setVoice(null);
+  setCall("","—","No call placed.");
   try{
     const fd=new FormData();fd.append("file",pendingFile);
     const r=await fetch("/inspect",{method:"POST",body:fd});
