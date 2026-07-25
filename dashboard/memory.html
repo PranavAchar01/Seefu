@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seefu: kitchen memory</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/aaaakshat/cm-web-fonts@latest/fonts.css">
+<style>
+/* The memory ledger: everything XTrace holds for this station, plus its own
+   usage meter. Same light industrial language as the station page. */
+:root{
+  --paper:#FFFFFF;--panel:#F5F6F7;--line:#D6D9DD;--line-soft:#E6E8EB;
+  --ink:#111316;--muted:#5B6169;--faint:#8A9099;
+  --accent:#0B5FFF;--pass:#0F7B4F;--warn:#B26A00;--warn-wash:#FDF6EC;
+  --serif:"Computer Modern Serif",Georgia,serif;
+  --mono:"Computer Modern Typewriter",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0;border-radius:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--serif);
+  font-size:14px;line-height:1.5}
+.wrap{width:min(1180px,96vw);margin:0 auto;padding:20px 0 36px}
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  border:1px solid var(--line);background:var(--panel);padding:13px 16px;margin-bottom:16px}
+.brand{font-size:18px;font-weight:700;letter-spacing:.36em;padding-left:.36em;text-transform:uppercase}
+.role{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);
+  border-left:1px solid var(--line);padding-left:16px}
+.top a{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--accent);
+  text-decoration:none;border:1px solid var(--line);padding:7px 11px;background:var(--paper)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.stat{border:1px solid var(--line);background:var(--paper);padding:12px 14px}
+.stat .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
+.stat .v{font-family:var(--mono);font-size:26px;margin-top:4px}
+.stat .s{font-size:11px;color:var(--muted)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+button{font:inherit;font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;border:1px solid var(--line);background:var(--paper);
+  color:var(--ink);padding:9px 14px;cursor:pointer}
+button:hover{background:var(--panel)}
+button.on{border-color:var(--accent);color:var(--accent)}
+.note{font-size:12px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;border:1px solid var(--line)}
+th{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--muted);text-align:left;background:var(--panel);
+  border-bottom:1px solid var(--line);padding:9px 12px}
+td{border-bottom:1px solid var(--line-soft);padding:9px 12px;vertical-align:top;font-size:13px}
+td.t{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+td.badge{white-space:nowrap}
+.chip{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  border:1px solid var(--line);background:var(--panel);padding:2px 7px}
+.chip.fact{border-color:var(--accent);color:var(--accent)}
+.chip.episode{border-color:var(--pass);color:var(--pass)}
+.chip.lesson,.chip.procedure{border-color:var(--warn);color:var(--warn);background:var(--warn-wash)}
+.pool{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.empty{border:1px dashed var(--line);background:var(--panel);padding:14px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">Seefu</div>
+    <div class="role">kitchen memory ledger</div>
+    <a href="/">Back to the station</a>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Events ingested</div><div class="v" id="stIngested">—</div>
+      <div class="s">plates, corrections and feedback filed to XTrace</div></div>
+    <div class="stat"><div class="k">Recalls run</div><div class="v" id="stSearches">—</div>
+      <div class="s">semantic searches over the memory pool</div></div>
+    <div class="stat"><div class="k">Facts held</div><div class="v" id="stFacts">—</div>
+      <div class="s">extracted claims, each one searchable</div></div>
+    <div class="stat"><div class="k">Episodes held</div><div class="v" id="stEpisodes">—</div>
+      <div class="s">per-shift summaries XTrace writes itself</div></div>
+  </div>
+
+  <div class="bar">
+    <button class="on" data-pool="all">All</button>
+    <button data-pool="inspection">Inspections</button>
+    <button data-pool="chef-corrections">Chef corrections</button>
+    <button data-pool="verdict-feedback">Verdict feedback</button>
+    <button data-pool="fact">Facts only</button>
+    <button data-pool="episode">Episodes only</button>
+    <button id="btnReload" style="margin-left:auto">Reload</button>
+    <span class="note" id="loadNote">Loading...</span>
+  </div>
+
+  <table>
+    <thead><tr><th style="width:110px">When</th><th style="width:90px">Type</th>
+      <th style="width:130px">Pool</th><th>Memory</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="4"><div class="empty">Loading the ledger...</div></td></tr></tbody>
+  </table>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let all=[],pool="all";
+
+function poolOf(m){
+  const c=String(m.conv_id||"");
+  if(c==="chef-corrections")return "chef-corrections";
+  if(c==="verdict-feedback")return "verdict-feedback";
+  if(c)return "inspection";
+  const t=String(m.text||"").toLowerCase();
+  if(t.includes("standing instruction"))return "chef-corrections";
+  if(t.includes("verdict feedback"))return "verdict-feedback";
+  return "inspection";
+}
+function poolLabel(m){
+  const p=poolOf(m);
+  return p==="inspection"?String(m.conv_id||"shift"):p.replace("-"," ");
+}
+function fmtTime(iso){
+  if(!iso)return "—";
+  const d=new Date(iso);
+  return isNaN(d)?String(iso).slice(0,16):
+    d.toLocaleDateString([], {month:"short",day:"numeric"})+" "+
+    d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+}
+function render(){
+  const rows=all.filter(m=>{
+    if(pool==="all")return true;
+    if(pool==="fact"||pool==="episode")return m.type===pool;
+    return poolOf(m)===pool;
+  });
+  $("rows").innerHTML=rows.length?rows.map(m=>
+    `<tr><td class="t">${esc(fmtTime(m.created_at))}</td>`+
+    `<td class="badge"><span class="chip ${esc(m.type||"fact")}">${esc(m.type||"?")}</span></td>`+
+    `<td class="pool">${esc(poolLabel(m))}</td>`+
+    `<td>${esc(m.text||"")}</td></tr>`).join("")
+    :'<tr><td colspan="4"><div class="empty">Nothing in this pool yet. Inspect a plate or teach the station, then reload; extraction runs a few seconds behind.</div></td></tr>';
+}
+async function load(){
+  $("loadNote").textContent="Loading...";
+  try{
+    const r=await fetch("/memory/all");
+    const d=await r.json();
+    if(!d.enabled){$("loadNote").textContent="XTRACE_API_KEY is not set on the server.";return}
+    const u=d.usage||{};
+    $("stIngested").textContent=u.ingested??"—";
+    $("stSearches").textContent=u.searches??"—";
+    $("stFacts").textContent=u.facts??"—";
+    $("stEpisodes").textContent=u.episodes??"—";
+    all=d.memories||[];
+    $("loadNote").textContent=all.length+" memories held";
+    render();
+  }catch(e){$("loadNote").textContent="Load failed: "+String(e&&e.message||e)}
+}
+document.querySelectorAll(".bar button[data-pool]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    document.querySelectorAll(".bar button[data-pool]").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");pool=b.dataset.pool;render();
+  });
+});
+$("btnReload").addEventListener("click",load);
+load();
+</script>
+</body>
+</html>

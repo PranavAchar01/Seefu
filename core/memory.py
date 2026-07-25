@@ -60,6 +60,47 @@ def station_user():
     return f"station:{STATION}"
 
 
+def _get(path, params, timeout=12.0):
+    global _last_error
+    import httpx
+    try:
+        r = httpx.get(f"{BASE}{path}", headers=_headers(), params=params,
+                      timeout=timeout)
+        if r.status_code >= 400:
+            _last_error = f"{path} -> {r.status_code}: {r.text[:160]}"
+            return None
+        _last_error = None
+        return r.json()
+    except Exception as e:
+        _last_error = f"{path} -> {type(e).__name__}: {e}"
+        return None
+
+
+def usage():
+    """XTrace's own meter for this key: proof the memory calls land."""
+    if not enabled():
+        return None
+    return _get("/v1/usage", {})
+
+
+def list_all(limit=100):
+    """Every memory XTrace holds for this station, newest first, with the pool
+    (shift, chef-corrections, verdict-feedback) it was filed under."""
+    if not enabled():
+        return []
+    out = []
+    for mem_type in ("fact", "episode", "lesson", "procedure"):
+        resp = _get("/v1/memories", {"user_id": station_user(), "type": mem_type,
+                                     "limit": limit})
+        for m in (resp or {}).get("data", []):
+            out.append({"id": m.get("id"), "type": m.get("type"),
+                        "text": m.get("text"), "created_at": m.get("created_at"),
+                        "conv_id": m.get("conv_id"),
+                        "updated_at": m.get("updated_at")})
+    out.sort(key=lambda m: m.get("created_at") or "", reverse=True)
+    return out[:limit]
+
+
 def _post(path, payload, timeout, params=None):
     global _last_error
     import httpx
@@ -146,6 +187,73 @@ def record_correction(text):
     }, timeout=20.0, params={"wait": "true"})
 
 
+FEEDBACK_MARK = "Operator verdict feedback"
+
+
+def record_feedback(case, correct, note=""):
+    """The right/wrong buttons: an operator's judgement of a verdict, filed so
+    future inspections can consult it. A wrong HOLD teaches the station what
+    the kitchen considers fine; a wrong PASS becomes a watch item."""
+    if not enabled():
+        return None
+    verdict = str(case.get("verdict", "?")).upper()
+    call = "RIGHT" if correct else "WRONG"
+    findings = "; ".join(f.get("description", "") for f in case.get("findings", [])) \
+        or "no findings"
+    content = (f"{FEEDBACK_MARK}: the {verdict} verdict on dish "
+               f"{case.get('dish_id', '?')} was {call}. Findings were: {findings}.")
+    if note:
+        content += f" Operator note: {note}"
+    return _post("/v1/memories", {
+        "messages": [{"role": "user", "content": content,
+                      "date": datetime.now(timezone.utc).isoformat()}],
+        "user_id": station_user(),
+        "conv_id": "verdict-feedback",
+        "agent_id": AGENT_ID,
+        "outcome": "resolved",
+    }, timeout=20.0, params={"wait": "true"})
+
+
+def count_overrules(finding_desc):
+    """How many times operators called a HOLD with a similar finding WRONG.
+    Two or more concordant overrules teach the station to stop holding plates
+    for this; a single one is treated as a possible misclick."""
+    if not enabled():
+        return 0
+    resp = search(f"{FEEDBACK_MARK}: hold verdict was wrong for: {finding_desc}",
+                  mode="retrieve", limit=8, include=["fact"])
+    if not resp:
+        return 0
+    hits = 0
+    for m in resp.get("data") or []:
+        text = (m.get("text") or "").lower()
+        if (m.get("score") or 0) < 0.4:
+            continue
+        if ("feedback" in text or "operator" in text) and "wrong" in text \
+                and ("defect" in text or "hold" in text):
+            hits += 1
+    return hits
+
+
+def watch_items():
+    """Findings operators said a PASS wrongly missed: surfaced as warnings on
+    future passes so a learned blind spot cannot stay silent."""
+    if not enabled():
+        return []
+    resp = search(f"{FEEDBACK_MARK}: a pass verdict was wrong, the plate had a miss",
+                  mode="retrieve", limit=6, include=["fact"])
+    if not resp:
+        return []
+    items = []
+    for m in resp.get("data") or []:
+        text = (m.get("text") or "")
+        low = text.lower()
+        if (m.get("score") or 0) >= 0.4 and "wrong" in low and "pass" in low \
+                and ("feedback" in low or "operator" in low):
+            items.append(text)
+    return items[:3]
+
+
 def search(query, mode="retrieve", limit=8, include=None):
     if not enabled():
         return None
@@ -196,7 +304,11 @@ def recall_insight(result):
     findings = result.get("findings") or []
     if result.get("verdict") != "defect" or not findings:
         lessons = trigger_lessons(result.get("dish_id"))
-        return {"recurrences": 0, "insight": None, "lessons": lessons} if lessons else None
+        watch = watch_items()
+        if lessons or watch:
+            return {"recurrences": 0, "insight": None, "lessons": lessons,
+                    "watch": watch}
+        return None
     primary = findings[0].get("description", "plate failure")
     resp = search(f"past plate failures like: {primary}", mode="retrieve", limit=8,
                   include=["fact"])

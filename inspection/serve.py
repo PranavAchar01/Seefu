@@ -315,6 +315,35 @@ def run_inspection(bgr, dish_id=None):
                         "expected element missing against the golden plate and "
                         "vision confirmed it. Held.")
 
+    # Learned suppression: when operators have called a hold WRONG for the
+    # same kind of finding at least twice, the station stops holding plates
+    # for it. Contamination findings are exempt on purpose: a system that can
+    # be taught to ignore foreign objects has no business near food.
+    if findings and verdict == "defect" \
+            and os.environ.get("SEEFU_FEEDBACK_LEARNING", "1") != "0":
+        from explain import _SAFETY_WORDS
+        kept, overruled = [], []
+        for b, f in zip(blobs, findings):
+            low = f["description"].lower()
+            if any(s in low for s in _SAFETY_WORDS):
+                kept.append((b, f))
+                continue
+            n = memory.count_overrules(f["description"])
+            if n >= 2:
+                overruled.append((f, n))
+            else:
+                kept.append((b, f))
+        if overruled:
+            blobs = [b for b, _ in kept]
+            findings = [f for _, f in kept]
+            ring_blobs = [b for b in ring_blobs if b in blobs]
+            learned = "; ".join(
+                f"'{f['description']}' was overruled by operators {n} times, "
+                "not holding for it anymore" for f, n in overruled)
+            note = ((note + " ") if note else "") + "Learned from feedback: " + learned
+            if not findings:
+                verdict = "pass"
+
     overlay_path = save_overlay(bgr, full_map, blobs if verdict == "defect" else [],
                                 threshold, ring_blobs)
     return {
@@ -723,8 +752,14 @@ def process_inspection(frame, dish_id=None, transform=None):
     result["case_id"] = case_id
     verify_and_mark(case_id)                     # M6; no-op fallback if unavailable
     # kitchen memory: ask XTrace whether this failure is a repeat BEFORE this
-    # plate is ingested, then file the plate as a new memory (async server-side)
+    # plate is ingested, then have gpt-4o read the recall as an analyst (is
+    # this a trend, what is the root cause, what one action fixes the line),
+    # then file the plate as a new memory (async server-side)
     result["memory"] = memory.recall_insight(result)
+    from trends import analyze_run
+    analysis = analyze_run(result, result["memory"])
+    if analysis:
+        result["memory"] = dict(result["memory"] or {}, analysis=analysis)
     memory.record_inspection(result)
     hub.emit({"type": "shift", **history.shift_summary()})
     if result["verdict"] == "defect":
@@ -870,14 +905,61 @@ def build_app():
 
     # ---------------- kitchen memory (XTrace) ----------------
 
+    @app.post("/feedback")
+    def feedback(body: dict):
+        """The right/wrong buttons on a verdict. Wrong holds teach suppression
+        (two concordant overrules required); wrong passes become watch items."""
+        case_id = str((body or {}).get("case_id", "")).strip()
+        correct = bool((body or {}).get("correct", True))
+        note = str((body or {}).get("note", "")).strip()[:300]
+        case_path = ROOT / f"runs/cases/{case_id}.json"
+        if not case_id or not case_path.exists():
+            raise HTTPException(404, f"no case {case_id!r}")
+        case = json.loads(case_path.read_text())
+        resp = memory.record_feedback(case, correct, note)
+        try:
+            sink().add_event(case_id, f"operator feedback: verdict "
+                                      f"{'right' if correct else 'wrong'}"
+                                      + (f" ({note})" if note else ""))
+        except Exception:
+            pass
+        hub.emit({"type": "event", "kind": "feedback", "source": "operator",
+                  "message": f"Verdict on case {case_id} marked "
+                             f"{'RIGHT' if correct else 'WRONG'}",
+                  "dish_id": case.get("dish_id", "")})
+        return {"recorded": resp is not None, "memory_enabled": memory.enabled(),
+                "note": ("filed; wrong holds start suppressing after two "
+                         "concordant overrules, wrong passes become watch items")}
+
     @app.get("/memory/status")
     def memory_status():
         return memory.status()
 
-    @app.get("/memory/summary")
-    def memory_summary():
-        # compose mode: XTrace returns a display-ready shift briefing
-        return memory.shift_briefing()
+    @app.get("/memory-dashboard")
+    def memory_dashboard():
+        from fastapi.responses import FileResponse
+        return FileResponse(ROOT / "dashboard/memory.html")
+
+    @app.get("/memory/all")
+    def memory_all():
+        # everything XTrace holds for this station + its own usage meter,
+        # proxied server-side so the key never reaches the browser
+        u = memory.usage() or {}
+        ops = u.get("operations") or {}
+        store = u.get("storage") or {}
+        return {"enabled": memory.enabled(),
+                "usage": {"ingested": ops.get("messages_ingested"),
+                          "searches": ops.get("searches"),
+                          "facts": store.get("memories_active"),
+                          "episodes": store.get("episodes_active")},
+                "memories": memory.list_all(limit=120)}
+
+    @app.get("/memory/trends")
+    def memory_trends():
+        # the deep read: gpt-4o over the whole recent memory pool, naming the
+        # long-running issues and the fixes that end them
+        from trends import analyze_trends
+        return analyze_trends()
 
     @app.get("/memory/recent")
     def memory_recent():

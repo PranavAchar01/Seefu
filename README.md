@@ -88,7 +88,11 @@ PatchCore sees one plate at a time and forgets it the moment the verdict lands. 
 
 3. **Chef corrections persist.** "Extra scallion is fine on this dish, never flag it" is ingested as a directive memory (outcome resolved) and recalled through XTrace's unmetered trigger endpoint on future plates of the same dish, so the station learns kitchen policy without retraining anything.
 
-4. **Shifts hand off automatically.** Memories are keyed to a shift id, so XTrace's episodes summarize each shift by themselves. One call in compose mode returns a display-ready briefing: what went wrong, on which dishes, what the incoming shift should watch.
+4. **Operators grade every verdict, and the station learns.** Right and Wrong buttons file each judgement as feedback memory. Two concordant overrules of the same kind of hold teach the station to stop holding plates for it (contamination findings are exempt by design: a system that can be taught to ignore foreign objects has no business near food). A wrong pass becomes a watch item that warns on future passes.
+
+5. **An analyst reads the memory after every run.** gpt-4o receives the current result plus everything memory recalled about it and answers the head chef's question: one-off or trend, what is the physical root cause, what single action fixes the line ("emerging pattern of missing scallion garnish, hopper likely empty, refill it now"). A deeper pass over the whole memory pool (`/memory/trends`, the Long-running issues button) names the systemic problems with prioritized fixes.
+
+6. **The memory ledger** (`/memory-dashboard`) shows everything XTrace holds: live usage counters from XTrace's own meter, and every fact, episode, correction and feedback entry in a filterable table.
 
 Why this matters in a real kitchen: the third missing-garnish plate during a rush is not three independent mistakes, it is one empty scallion hopper. A stateless inspector rejects three plates and lets the kitchen fire a fourth. A remembering inspector rejects the first two, names the pattern on the third, and tells a human which station to check. And when the night crew walks in, they inherit the day's failure patterns as a two-paragraph briefing instead of tribal knowledge that walked out with the last shift.
 

@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Seefu: plate check for autonomous kitchens</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/aaaakshat/cm-web-fonts@latest/fonts.css">
 <style>
 /* Seefu pass station. One column, four blocks: inspect a plate, then the
    issue beside the kitchen memory, then the manager call and retraining.
@@ -22,8 +20,8 @@
   --pass:#0F7B4F;--pass-wash:#EEF6F2;
   --fail:#C62828;--fail-wash:#FBEEEE;
   --warn:#B26A00;--warn-wash:#FDF6EC;
-  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"Computer Modern Typewriter",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:"Computer Modern Serif",Georgia,serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;border-radius:0}
 html,body{background:var(--paper)}
@@ -172,6 +170,13 @@ input[type=file]{display:none}
   border-left:3px solid var(--pass);background:var(--pass-wash);padding:6px 9px}
 .f-fix b{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
   text-transform:uppercase;color:var(--pass)}
+.fbrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;
+  border:1px solid var(--line-soft);background:var(--panel);padding:8px 11px}
+.fbrow .fblabel{font-size:11px;color:var(--muted)}
+.fbrow button.act{padding:8px 14px}
+.fbrow input{flex:1 1 180px;font:inherit;font-size:11.5px;border:1px solid var(--line);
+  padding:8px 10px;background:var(--paper)}
+.fbrow.done{color:var(--pass)}
 
 /* ---------- operator call ---------- */
 .callrow{display:flex;align-items:center;gap:11px}
@@ -258,6 +263,14 @@ body.drag #dropHint{display:grid}
           </div>
         </div>
         <div class="caseline" id="caseLine" hidden></div>
+        <div class="fbrow" id="fbRow" hidden>
+          <span class="fblabel" id="fbAsk">Was this verdict right?</span>
+          <button class="act" id="btnRight" type="button">Right</button>
+          <button class="act" id="btnWrong" type="button">Wrong</button>
+          <input id="fbNote" placeholder="optional: what was actually the case" hidden>
+          <button class="act" id="btnWrongSend" type="button" hidden>File it</button>
+          <span class="fblabel" id="fbStatus" hidden></span>
+        </div>
         <div class="flabel">Findings</div>
         <div id="findings"><div class="empty">No finding requires review.</div></div>
         <div class="notice" id="notice" hidden><span class="k">Station note</span><span id="noticeBody"></span></div>
@@ -282,13 +295,24 @@ body.drag #dropHint{display:grid}
         <div class="memblock" id="memLessonBlock" hidden>
           <div class="memlesson"><span class="k">Chef guidance for this dish</span><span id="memLessonBody"></span></div>
         </div>
-        <div class="flabel">Shift briefing</div>
+        <div class="memblock" id="memWatchBlock" hidden>
+          <div class="memlesson"><span class="k">Watch list from feedback</span><span id="memWatchBody"></span></div>
+        </div>
+        <div class="memblock" id="memAnalysisBlock" hidden>
+          <div class="meminsight"><span class="k">Line analyst</span><span id="memAnalysisBody"></span></div>
+        </div>
+        <div class="flabel">Long-running issues</div>
         <div class="memblock">
-          <div class="membrief" id="memBrief">Press the button after a few plates: XTrace composes
-what went wrong this shift and what the next shift should watch.</div>
+          <div class="membrief" id="memTrends">After a few plates, the analyst reads the whole
+kitchen memory and names the issues that keep recurring, with the fix that ends each one.</div>
           <div class="memrow">
-            <button class="act" id="btnBrief" type="button">Compose shift briefing</button>
+            <button class="act" id="btnTrends" type="button">Analyze long-running issues</button>
+          </div>
+        </div>
+        <div class="memblock">
+          <div class="memrow">
             <button class="act" id="btnRecent" type="button">Recent memories</button>
+            <button class="act" id="btnMemDash" type="button">Open memory ledger</button>
           </div>
         </div>
         <div class="flabel">Recent kitchen memories</div>
@@ -505,6 +529,7 @@ function setVerdict(kind,word,meta){
   $("vText").textContent=word;$("vSub").textContent=meta;
 }
 function renderCase(m){
+  if(m.case_id)armFeedback(m.case_id);
   const el=$("caseLine");
   if(!m.case_id&&!m.note){el.hidden=true;return}
   const bits=[];
@@ -523,8 +548,9 @@ function renderCase(m){
    carry (note, overlay_url) are left as the run began them, so the panel fills
    in progressively instead of flickering back to empty. */
 function renderMemory(mem){
-  const ib=$("memInsightBlock"),lb=$("memLessonBlock");
-  if(!mem){ib.hidden=true;lb.hidden=true;return}
+  const ib=$("memInsightBlock"),lb=$("memLessonBlock"),
+        wb=$("memWatchBlock"),ab=$("memAnalysisBlock");
+  if(!mem){ib.hidden=true;lb.hidden=true;wb.hidden=true;ab.hidden=true;return}
   const n=Number(mem.recurrences)||0;
   let text=mem.insight||"";
   if(!text&&n===0)text="No similar failure in kitchen memory. Filed as the first.";
@@ -533,6 +559,18 @@ function renderMemory(mem){
   const lessons=(mem.lessons||[]).filter(Boolean);
   if(lessons.length){$("memLessonBody").textContent=lessons.join(" ");lb.hidden=false}
   else lb.hidden=true;
+  const watch=(mem.watch||[]).filter(Boolean);
+  if(watch.length){$("memWatchBody").textContent=watch.join(" ");wb.hidden=false}
+  else wb.hidden=true;
+  const a=mem.analysis;
+  if(a&&(a.trend||a.action)){
+    $("memAnalysisBody").innerHTML=
+      (a.long_running?'<b>LONG-RUNNING.</b> ':"")+esc(a.trend||"")+
+      (a.root_cause?"<br>Root cause: "+esc(a.root_cause):"")+
+      (a.action?"<br><b>Action: "+esc(a.action)+"</b>":"")+
+      (a.confidence?" <span style='color:var(--faint)'>("+esc(a.confidence)+" confidence)</span>":"");
+    ab.hidden=false;
+  }else ab.hidden=true;
 }
 
 function renderResult(d){
@@ -566,6 +604,8 @@ function beginInspection(boardId){
   $("notice").hidden=true;
   $("overlayWrap").classList.remove("on");
   $("caseLine").hidden=true;
+  currentCase=null;
+  const row=$("fbRow");row.hidden=true;
 }
 
 /* ---------- stage an image, then run ---------- */
@@ -632,21 +672,70 @@ $("fileIn").addEventListener("change",()=>{
   selectFile($("fileIn").files[0]);$("fileIn").value="";
 });
 
-/* ---------- kitchen memory panel ---------- */
-$("btnBrief").addEventListener("click",async()=>{
-  $("btnBrief").disabled=true;
-  $("memBrief").textContent="Composing from this shift's memories...";
+/* ---------- verdict feedback: the learning loop ---------- */
+let currentCase=null;
+function fbControls(show){
+  for(const id of ["fbAsk","btnRight","btnWrong"])$(id).hidden=!show;
+  if(show){$("btnRight").disabled=$("btnWrong").disabled=$("btnWrongSend").disabled=false}
+}
+function armFeedback(caseId){
+  currentCase=caseId;
+  const row=$("fbRow");row.hidden=!caseId;row.classList.remove("done");
+  fbControls(true);
+  $("fbNote").hidden=true;$("btnWrongSend").hidden=true;$("fbNote").value="";
+  $("fbStatus").hidden=true;
+}
+async function sendFeedback(correct,note){
+  if(!currentCase)return;
+  $("btnRight").disabled=$("btnWrong").disabled=$("btnWrongSend").disabled=true;
   try{
-    const r=await fetch("/memory/summary");
+    const r=await fetch("/feedback",{method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({case_id:currentCase,correct,note:note||""})});
     const d=await r.json();
-    if(!d.enabled){$("memBrief").textContent="XTRACE_API_KEY is not set on the server."}
-    else if(d.context){$("memBrief").textContent=d.context}
-    else if((d.facts||[]).length){$("memBrief").textContent=d.facts.join("\n")}
-    else{$("memBrief").textContent="No shift memories yet. Ingestion runs a few seconds "+
-      "behind each plate; inspect a plate or two and try again."}
-  }catch(e){$("memBrief").textContent="Briefing failed: "+String(e&&e.message||e)}
-  $("btnBrief").disabled=false;
+    if(!r.ok)throw new Error(d.detail||("HTTP "+r.status));
+    $("fbRow").classList.add("done");
+    fbControls(false);$("fbNote").hidden=true;$("btnWrongSend").hidden=true;
+    $("fbStatus").textContent="Filed. "+(correct
+      ?"Confirmations sharpen the analyst's confidence."
+      :"Two concordant overrules and the station stops holding plates for this; a wrong pass joins the watch list.");
+    $("fbStatus").hidden=false;
+    addFeed("operator","Verdict marked "+(correct?"RIGHT":"WRONG"));
+  }catch(e){
+    addFeed("operator","Feedback failed: "+String(e&&e.message||e));
+    fbControls(true);
+  }
+}
+$("btnRight").addEventListener("click",()=>sendFeedback(true));
+$("btnWrong").addEventListener("click",()=>{
+  $("fbNote").hidden=false;$("btnWrongSend").hidden=false;$("fbNote").focus();
 });
+$("btnWrongSend").addEventListener("click",()=>sendFeedback(false,$("fbNote").value.trim()));
+
+/* ---------- long-running issues (analyst over the whole memory) ---------- */
+$("btnTrends").addEventListener("click",async()=>{
+  $("btnTrends").disabled=true;
+  $("memTrends").textContent="Reading the whole kitchen memory...";
+  try{
+    const r=await fetch("/memory/trends");
+    const d=await r.json();
+    if(!d.enabled){$("memTrends").textContent="XTRACE_API_KEY is not set on the server."}
+    else if((d.issues||[]).length){
+      $("memTrends").innerHTML=esc(d.summary||"")+(d.summary?"\n\n":"")+
+        d.issues.map(i=>"["+esc((i.priority||"").toUpperCase())+"] "+esc(i.issue||"")+
+          "\n  evidence: "+esc(i.evidence||"")+
+          "\n  root cause: "+esc(i.root_cause||"")+
+          "\n  fix: "+esc(i.fix||"")).join("\n\n");
+    }else{
+      $("memTrends").textContent=d.summary||d.error||
+        "No long-running issues found. The line looks healthy.";
+    }
+  }catch(e){$("memTrends").textContent="Analysis failed: "+String(e&&e.message||e)}
+  $("btnTrends").disabled=false;
+});
+
+/* ---------- kitchen memory panel ---------- */
+$("btnMemDash").addEventListener("click",()=>window.open("/memory-dashboard","_blank"));
 $("btnRecent").addEventListener("click",async()=>{
   $("btnRecent").disabled=true;
   try{
