@@ -49,36 +49,111 @@ That record turns into three things a robot restaurant operator can actually sel
 ## System overview
 
 ```
-  Overhead camera at the pass
+  Plate photo (upload or pass camera)
             │
             ▼
-   Plate detection + dish ID
+   Golden-plate registration        ORB + RANSAC homography to the reference
             │
             ▼
-   Per-dish anomaly scoring   ──►  heat map + score
+   PatchCore anomaly scoring        trained on good plates only, CPU, ~52s
             │
             ▼
-   Threshold + hold decision  ──►  pass / hold / alert
+   Pixel-level localization         tight contours on the anomalous regions
             │
             ▼
-   Audit log (image, verdict, map, ticket ID)
+   Comparative vision (gpt-4o)      what is wrong + the FIX, per region
+            │
+            ├──►  pass / HOLD verdict + annotated plate image
+            ├──►  Manager call on a hold (Twilio + ElevenLabs voice)
+            └──►  Kitchen memory (XTrace): file, recall, brief
 ```
 
-Inference runs on-device at the pass so that a network outage never becomes a food safety outage. The audit log syncs when connectivity returns.
+Inference runs on-device at the pass so that a network outage never becomes a food safety outage. The vision and memory layers degrade gracefully: without keys, the station still scores, localizes, and holds.
 
-## Status
+## The model
 
-Early development. The initial target is a single-camera pass-side deployment on a fixed menu, with the reference model, capture tooling, and scoring service in this repository.
+The detector is PatchCore (anomalib 2.5.1): a frozen wide_resnet50_2 backbone, layer 2 and 3 features, a coreset-subsampled memory bank of what correct plates look like. This repository ships an 80-image training set of a sesame beef bowl (`data/normal`, one real plate photo plus 79 mild photometric and geometric augmentations, parameters in `data/manifest.csv`).
+
+Training takes under a minute on a laptop CPU and never sees a defect. The pass threshold is calibrated from the score distributions: every normal plate scores below 47.6, a plate with a foreign object scores 51.5, a plate missing its broccoli scores 73.8, and the threshold sits between at 49.5. Uploads shot off the pass are registered onto the golden plate first, so background, angle and scale differences do not read as anomalies.
+
+Each flagged region is then cropped and sent to gpt-4o NEXT TO the same region of the golden plate, and the model answers in one line: what is wrong, and the fix the kitchen takes. Food safety inverts the usual confidence rule: a hedged answer downgrades a finding, UNLESS it touches contamination, where doubt itself holds the plate.
+
+## Kitchen memory: XTrace
+
+PatchCore sees one plate at a time and forgets it the moment the verdict lands. [XTrace](https://docs.xtrace.ai) is the layer that remembers, and it is wired into four places (`core/memory.py`):
+
+1. **Every inspection is filed.** After each verdict, the result is serialized into a natural-language event and ingested (`POST /v1/memories`). XTrace's extraction pipeline turns it into searchable facts and per-shift episode summaries on its own.
+
+2. **Every failure is checked against the past.** Before a hold verdict reaches the operator, Seefu searches kitchen memory for semantically similar past failures (`POST /v1/memories/search`, retrieve mode). One earlier match is a note. Two or more flips the message: this is not a plating slip, this is an ingredient station that is empty or misloaded, fix the line before the next plate fires.
+
+3. **Chef corrections persist.** "Extra scallion is fine on this dish, never flag it" is ingested as a directive memory (outcome resolved) and recalled through XTrace's unmetered trigger endpoint on future plates of the same dish, so the station learns kitchen policy without retraining anything.
+
+4. **Shifts hand off automatically.** Memories are keyed to a shift id, so XTrace's episodes summarize each shift by themselves. One call in compose mode returns a display-ready briefing: what went wrong, on which dishes, what the incoming shift should watch.
+
+Why this matters in a real kitchen: the third missing-garnish plate during a rush is not three independent mistakes, it is one empty scallion hopper. A stateless inspector rejects three plates and lets the kitchen fire a fourth. A remembering inspector rejects the first two, names the pattern on the third, and tells a human which station to check. And when the night crew walks in, they inherit the day's failure patterns as a two-paragraph briefing instead of tribal knowledge that walked out with the last shift.
+
+## Retraining
+
+The bank learns only from known-good plates, so improving the model is an operational loop, not a data science project:
+
+1. `POST /train/upload` stages new good-plate photos into `data/normal` (or use the Add Good Plates button on the station page).
+2. `POST /train/rebuild` retrains the memory bank and recalibrates the threshold in the background.
+3. The serving model hot-swaps on the new checkpoint's mtime. The server never goes down.
+
+New dish, new lighting, new plating standard: cook it correctly a few dozen times, upload, rebuild, done.
+
+## Manager calls
+
+A held plate rings the kitchen manager: Twilio places the call and an ElevenLabs-synthesized voice reads the case, dish id, what is wrong, and the fix, twice. Announce-only by design; the annotated plate stays on the dashboard.
+
+## Quickstart
+
+Python 3.10+, an OpenAI API key, and optionally XTrace and Twilio/ElevenLabs keys.
+
+```bash
+git clone https://github.com/PranavAchar01/Seefu.git
+cd Seefu
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env   # then fill in the keys
+make bank              # train PatchCore on data/normal (~1 min, CPU)
+make calibrate         # score normals + test defects, write the threshold
+make serve             # station page on http://localhost:8000
+```
+
+`.env` keys: `OPENAI_API_KEY` (vision explanations + case verification), `XTRACE_API_KEY` (kitchen memory), `TWILIO_ACCOUNT_SID/AUTH_TOKEN/FROM/TO` and `ELEVENLABS_API_KEY` (manager calls). Everything degrades gracefully without them.
+
+## Project structure
+
+```
+seefu/
+  inspection/train_bank.py  # PatchCore memory bank builder
+  inspection/serve.py       # FastAPI: /inspect, /train/*, /memory/*, station page
+  inspection/explain.py     # comparative gpt-4o: what is wrong + the fix
+  inspection/verify.py      # consistency check -> verified stamp per case
+  core/memory.py            # XTrace: file every plate, recall failures, brief shifts
+  core/phone.py             # Twilio + ElevenLabs manager alerts
+  core/frames.py            # shared ingest geometry
+  core/casesink.py          # case records; core/history.py: sqlite shift stats
+  dashboard/minimal.html    # the station page
+  data/normal/              # the 80-plate good set; data/test_defect/: calibration foils
+  capture/, scripts/, tests/
+```
 
 ## Roadmap
 
-- [ ] Capture tooling for golden-plate dataset collection
-- [ ] Per-dish anomaly model training pipeline
-- [ ] Real-time scoring service with heat map output
-- [ ] Threshold calibration UI for per-dish sensitivity
-- [ ] Audit log and evidence export
+- [x] Golden-plate dataset (80 normals, manifest included)
+- [x] Per-dish anomaly model training pipeline
+- [x] Real-time scoring service with localization overlays
+- [x] Threshold calibration from normal and synthetic-defect distributions
+- [x] Fix suggestions per finding (comparative vision)
+- [x] Kitchen memory: recall, corrections, shift briefings (XTrace)
+- [x] Retraining loop with hot model swap
+- [x] Manager call alerts (Twilio + ElevenLabs)
+- [ ] 30fps pass-side video sampling (currently per-plate stills)
+- [ ] Multi-dish menus (per-dish banks + dish ID routing)
 - [ ] Multi-camera and multi-station support
-- [ ] Edge deployment package
+- [ ] Audit log evidence export
 
 ## License
 
