@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Seefu: manager briefing</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/aaaakshat/cm-web-fonts@latest/fonts.css">
+<style>
+  :root{--ink:#000;--paper:#FFF;--accent:#0B5FFF;--pass:#0F7B4F;--fail:#C62828;
+    --serif:"Computer Modern Serif",Georgia,serif;
+    --mono:"Computer Modern Typewriter",ui-monospace,Menlo,monospace}
+  *{box-sizing:border-box;margin:0;padding:0;border-radius:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--serif);
+       display:grid;place-items:center;height:100vh}
+  .card{border:1px solid var(--ink);padding:36px;text-align:center;min-width:380px;max-width:520px}
+  h1{font-size:19px;letter-spacing:.34em;padding-left:.34em;font-weight:700;
+     text-transform:uppercase;margin-bottom:6px}
+  .sub{font-size:11px;letter-spacing:.18em;text-transform:uppercase;margin-bottom:22px}
+  button{background:var(--paper);border:1px solid var(--ink);color:var(--ink);
+         padding:14px 30px;font-family:var(--mono);font-size:13px;letter-spacing:.12em;
+         text-transform:uppercase;cursor:pointer}
+  button:hover:not(:disabled){background:var(--ink);color:var(--paper)}
+  button:disabled{border-style:dashed;cursor:not-allowed}
+  #status{margin-top:16px;font-family:var(--mono);font-size:12px;min-height:18px}
+  #status.live{color:var(--pass)}
+  #status.speaking{color:var(--accent)}
+  #transcript{margin-top:14px;font-size:13.5px;line-height:1.55;min-height:40px;text-align:left}
+  .hint{margin-top:18px;font-size:11px;border-top:1px solid var(--ink);padding-top:12px;
+        text-align:left;line-height:1.6}
+  a{color:var(--accent);font-family:var(--mono);font-size:11px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Seefu</h1>
+  <div class="sub">Manager briefing, live voice</div>
+  <button id="mic">Start the briefing</button>
+  <div id="status">idle</div>
+  <div id="transcript"></div>
+  <div class="hint">Ask what it is seeing on the line, why plates are being held,
+    what keeps going wrong, or give it a standing rule; it remembers.
+    Try: "what should I worry about today?"</div>
+  <div style="margin-top:12px;text-align:left"><a href="/">Back to the station</a></div>
+</div>
+<script>
+const status = (t, cls) => { const s = document.getElementById("status");
+  s.textContent = t; s.className = cls || ""; };
+
+const TOOL_ROUTES = {
+  get_latest_case: "/agent/tools/get_latest_case",
+  get_shift_summary: "/agent/tools/get_shift_summary",
+  get_defect_history: "/agent/tools/get_defect_history",
+  memory_trends: "/agent/tools/memory_trends",
+  memory_recall: "/agent/tools/memory_recall",
+  teach_correction: "/agent/tools/teach_correction",
+};
+
+async function runTool(name, args) {
+  const route = TOOL_ROUTES[name];
+  if (!route) return {error: "unknown tool " + name};
+  try {
+    const r = await fetch(route, {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(args || {})});
+    return await r.json();
+  } catch (e) { return {error: String(e)}; }
+}
+
+let transcript = "";
+let toolChain = Promise.resolve();   // serialize tool dispatch: one output+response at a time
+
+async function start() {
+  const mic = document.getElementById("mic");
+  mic.disabled = true;
+  try {
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      status("mic needs localhost or https - open http://localhost:8000/agent");
+      return;
+    }
+    status("minting token...");
+    const tok = await fetch("/agent/token", {method: "POST"});
+    if (!tok.ok) { status("token mint failed: " + (await tok.text()).slice(0, 120)); return; }
+    const {value: KEY} = await tok.json();
+
+    const pc = new RTCPeerConnection();
+    const audioEl = document.createElement("audio");
+    audioEl.autoplay = true;
+    pc.ontrack = e => { audioEl.srcObject = e.streams[0]; };
+
+    status("requesting mic...");
+    let ms;
+    try {
+      ms = await navigator.mediaDevices.getUserMedia({audio: true});
+    } catch (err) {
+      status("mic denied: " + err.name + " - allow the mic and click again");
+      return;
+    }
+    pc.addTrack(ms.getTracks()[0]);
+
+    const dc = pc.createDataChannel("oai-events");
+    const send = o => dc.send(JSON.stringify(o));
+
+    dc.addEventListener("message", e => {
+      const ev = JSON.parse(e.data);
+      switch (ev.type) {
+        case "error":
+          console.error("realtime error:", ev);
+          status("agent error: " + (ev.error?.message || "see console"), "");
+          break;
+        case "output_audio_buffer.started":
+          transcript = "";
+          status("speaking", "speaking"); break;
+        case "output_audio_buffer.stopped":
+        case "output_audio_buffer.cleared":
+          status("listening", "live");
+          document.getElementById("transcript").textContent = transcript.trim();
+          break;
+        case "response.output_audio_transcript.delta":
+          transcript += ev.delta || ""; break;
+        case "response.function_call_arguments.done":
+          toolChain = toolChain.then(async () => {
+            const args = JSON.parse(ev.arguments || "{}");
+            const result = await runTool(ev.name, args);
+            send({type: "conversation.item.create",
+                  item: {type: "function_call_output", call_id: ev.call_id,
+                         output: JSON.stringify(result)}});
+            send({type: "response.create"});
+          }).catch(err => console.error("tool dispatch failed:", err));
+          break;
+      }
+    });
+
+    status("connecting...");
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const sdp = await fetch("https://api.openai.com/v1/realtime/calls", {
+      method: "POST", body: offer.sdp,
+      headers: {Authorization: "Bearer " + KEY, "Content-Type": "application/sdp"}});
+    if (!sdp.ok) {
+      status("webrtc connect failed " + sdp.status + ": " +
+             (await sdp.text()).slice(0, 140));
+      return;
+    }
+    await pc.setRemoteDescription({type: "answer", sdp: await sdp.text()});
+    status("listening", "live");
+    mic.textContent = "Live";
+  } finally {
+    if (document.getElementById("status").className !== "live") mic.disabled = false;
+  }
+}
+
+document.getElementById("mic").addEventListener("click", start);
+</script>
+</body>
+</html>

@@ -312,11 +312,16 @@ body.drag #dropHint{display:grid}
   </div>
 
   <section class="panel" id="secCall">
-    <div class="phead"><h2>Manager call</h2><span class="hint">Twilio</span></div>
+    <div class="phead"><h2>Manager</h2><span class="hint">Live voice briefing</span></div>
     <div class="pbody">
+      <div class="callrow" style="margin-bottom:10px">
+        <button class="act primary" id="btnAgent" type="button">Talk to the station</button>
+        <span style="font-size:12px">Ask what it is seeing, why plates are held, and what
+          keeps going wrong; give it standing rules by voice.</span>
+      </div>
       <div class="callrow" id="callRow">
         <span class="callgly" id="callGly">—</span>
-        <span id="phone">No call placed.</span>
+        <span id="phone">Phone alerts off; the voice briefing is the manager channel.</span>
       </div>
     </div>
   </section>
@@ -664,6 +669,7 @@ $("btnTrends").addEventListener("click",async()=>{
 
 /* ---------- kitchen memory panel ---------- */
 $("btnMemDash").addEventListener("click",()=>window.open("/memory-dashboard","_blank"));
+$("btnAgent").addEventListener("click",()=>window.open("/agent","_blank"));
 $("btnTeach").addEventListener("click",async()=>{
   const text=$("memTeach").value.trim();
   if(!text)return;

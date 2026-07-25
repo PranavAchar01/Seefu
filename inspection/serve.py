@@ -805,6 +805,9 @@ def build_app():
 
     app = FastAPI(title="Seefu plate check")
 
+    from agent.tools import router as agent_router
+    app.include_router(agent_router)
+
     @app.on_event("startup")
     async def warm():
         hub.register_loop(asyncio.get_running_loop())
