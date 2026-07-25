@@ -262,7 +262,6 @@ body.drag #dropHint{display:grid}
             <div class="meta" id="vSub">Stage a dish image, then press Run inspection.</div>
           </div>
         </div>
-        <div class="caseline" id="caseLine" hidden></div>
         <div class="fbrow" id="fbRow" hidden>
           <span class="fblabel" id="fbAsk">Was this verdict right?</span>
           <button class="act" id="btnRight" type="button">Right</button>
@@ -284,11 +283,6 @@ body.drag #dropHint{display:grid}
     <section class="panel" id="secMemory">
       <div class="phead"><h2>Kitchen memory</h2><span class="hint" id="memTag">XTrace</span></div>
       <div class="pbody">
-        <div class="membar" style="margin:-14px -14px 12px;border-bottom:1px solid var(--line)">
-          <b>The station remembers every plate.</b> Each verdict is filed to XTrace and each
-          failure is checked against past plates, so a repeating miss reads as a line
-          problem, not a one-off. Chef corrections resurface on future plates of this dish.
-        </div>
         <div class="memblock" id="memInsightBlock" hidden>
           <div class="meminsight" id="memInsight"><span class="k">Recall</span><span id="memInsightBody"></span></div>
         </div>
@@ -301,22 +295,13 @@ body.drag #dropHint{display:grid}
         <div class="memblock" id="memAnalysisBlock" hidden>
           <div class="meminsight"><span class="k">Line analyst</span><span id="memAnalysisBody"></span></div>
         </div>
-        <div class="flabel">Long-running issues</div>
         <div class="memblock">
-          <div class="membrief" id="memTrends">After a few plates, the analyst reads the whole
-kitchen memory and names the issues that keep recurring, with the fix that ends each one.</div>
+          <div class="membrief" id="memTrends" hidden></div>
           <div class="memrow">
-            <button class="act" id="btnTrends" type="button">Analyze long-running issues</button>
+            <button class="act" id="btnTrends" type="button">Long-running issues</button>
+            <button class="act" id="btnMemDash" type="button">Memory ledger</button>
           </div>
         </div>
-        <div class="memblock">
-          <div class="memrow">
-            <button class="act" id="btnRecent" type="button">Recent memories</button>
-            <button class="act" id="btnMemDash" type="button">Open memory ledger</button>
-          </div>
-        </div>
-        <div class="flabel">Recent kitchen memories</div>
-        <div class="memblock" id="memRecent"><div class="empty">Not loaded yet.</div></div>
         <div class="flabel">Teach the station</div>
         <div class="memrow">
           <input id="memTeach" placeholder="e.g. Extra scallion is fine on this dish, never flag it">
@@ -332,11 +317,6 @@ kitchen memory and names the issues that keep recurring, with the fix that ends 
       <div class="callrow" id="callRow">
         <span class="callgly" id="callGly">—</span>
         <span id="phone">No call placed.</span>
-      </div>
-      <div class="voiceline" id="voiceLine"></div>
-      <div class="feed" id="feed">
-        <div class="flab">Station activity</div>
-        <ul id="feedList"></ul>
       </div>
     </div>
   </section>
@@ -367,23 +347,6 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>
 
 const num=v=>typeof v==="number"&&isFinite(v)
   ?String(Number(v.toFixed(3))):(v==null||v===""?"—":String(v));
-
-/* ---------- station activity feed ---------- */
-function clockNow(){
-  const d=new Date();
-  return String(d.getHours()).padStart(2,"0")+":"+
-    String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0");
-}
-function addFeed(source,message){
-  const list=$("feedList");if(!list||!message)return;
-  const li=document.createElement("li");
-  li.innerHTML=`<span class="t">${esc(clockNow())}</span>`+
-    `<span class="s">${esc(source||"station")}</span>`+
-    `<span>${esc(message)}</span>`;
-  list.appendChild(li);
-  while(list.children.length>8)list.removeChild(list.firstChild);
-  $("feed").classList.add("on");
-}
 
 /* ---------- websocket: live station channel ---------- */
 let ws,retry=0,pollTimer=null;
@@ -432,10 +395,6 @@ function handle(m){
       renderCase(m);
       break;
 
-    case "event":
-      addFeed(m.source||m.kind||"station",m.message||"");
-      break;
-
     case "phone":
       onPhone(m);
       break;
@@ -447,28 +406,13 @@ function setCall(cls,glyph,text){
   callRow.className="callrow"+(cls?" "+cls:"");
   callGly.textContent=glyph;phone.textContent=text;
 }
-/* Which voice actually spoke to the operator: the ElevenLabs render, or
-   Twilio's built-in fallback when synthesis was unavailable. */
-function setVoice(voice,reason){
-  const el=$("voiceLine");
-  if(!voice){el.className="voiceline";el.innerHTML="";return}
-  const eleven=String(voice)==="elevenlabs";
-  el.className="voiceline on";
-  el.innerHTML=eleven
-    ?'<b>Voice: ElevenLabs</b> &mdash; the operator hears the generated voice.'
-    :'<b>Voice: Twilio fallback</b> &mdash; the operator hears Twilio’s built-in voice'+
-      (reason?", because "+esc(String(reason)):"")+".";
-}
 function onPhone(m){
   clearInterval(pollTimer);
-  setVoice(m.voice,m.reason);
   if(m.status==="placed"){
-    setCall("busy","○","Call placed. Waiting for pickup"+(m.message?" ("+m.message+")":"")+".");
-    addFeed("voice.twilio","Call placed to the operator");
+    setCall("busy","○","Call placed. Waiting for pickup.");
     if(m.sid)pollStatus(m.sid);
   }else if(m.status==="failed"){
     setCall("bad","✕","CALL FAILED: "+(m.message||"Twilio rejected the call"));
-    addFeed("voice.twilio","Call failed");
   }else if(m.status==="skipped"){
     setCall("","—","Call skipped"+(m.message?" ("+m.message+")":"")+".");
   }else if(m.status==="disabled"){
@@ -499,10 +443,7 @@ function pollStatus(sid){
       const {status}=await r.json();
       const t=CALL_TEXT[status];
       if(t)setCall(t[0],t[1],t[2]);
-      if(CALL_DONE.includes(status)){
-        addFeed("voice.twilio","Call "+status);
-        clearInterval(pollTimer);
-      }
+      if(CALL_DONE.includes(status))clearInterval(pollTimer);
     }catch(e){}
   },2000);
 }
@@ -529,19 +470,9 @@ function setVerdict(kind,word,meta){
   $("vText").textContent=word;$("vSub").textContent=meta;
 }
 function renderCase(m){
+  /* the case record itself lives in the ledger; on this page a case frame
+     only arms the right/wrong feedback for its verdict */
   if(m.case_id)armFeedback(m.case_id);
-  const el=$("caseLine");
-  if(!m.case_id&&!m.note){el.hidden=true;return}
-  const bits=[];
-  if(m.case_id)bits.push("CASE "+esc(m.case_id));
-  if(m.status)bits.push(esc(String(m.status).replace(/_/g," ")));
-  /* only speak to verification when the record actually says something about
-     it - "not yet verified" is a claim, and an absent field is not evidence */
-  if(m.verified!==undefined)bits.push(m.verified?"verified":"not yet verified");
-  if(m.zendesk_id)bits.push("ticket "+esc(m.zendesk_id));
-  el.innerHTML="<b>"+bits.join("</b> &middot; <b>")+"</b>"+
-    (m.note?`<span class="note">${esc(m.note)}</span>`:"");
-  el.hidden=false;
 }
 
 /* One renderer for both arrival paths. Fields the websocket frame does not
@@ -603,7 +534,6 @@ function beginInspection(boardId){
   $("findings").innerHTML='<div class="empty">Waiting for the verdict...</div>';
   $("notice").hidden=true;
   $("overlayWrap").classList.remove("on");
-  $("caseLine").hidden=true;
   currentCase=null;
   const row=$("fbRow");row.hidden=true;
 }
@@ -642,10 +572,7 @@ async function inspect(){
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||d.error||("HTTP "+r.status));
     renderResult(d);
-    /* The websocket "case" frames are the authoritative case record - they carry
-       the verification pass and its note, which the /inspect body does not. Only
-       fall back to the id in the response when no frame arrived (link down). */
-    if(d.case_id&&$("caseLine").hidden)renderCase({case_id:d.case_id});
+    if(d.case_id&&!currentCase)renderCase({case_id:d.case_id});
     const fail=d.verdict==="defect";
     setStatus(fail?"bad":"ready",
       fail?"Hold on "+(d.dish_id||"the plate")+". Review the findings and the fix."
@@ -696,13 +623,13 @@ async function sendFeedback(correct,note){
     if(!r.ok)throw new Error(d.detail||("HTTP "+r.status));
     $("fbRow").classList.add("done");
     fbControls(false);$("fbNote").hidden=true;$("btnWrongSend").hidden=true;
-    $("fbStatus").textContent="Filed. "+(correct
-      ?"Confirmations sharpen the analyst's confidence."
-      :"Two concordant overrules and the station stops holding plates for this; a wrong pass joins the watch list.");
+    $("fbStatus").textContent=correct
+      ?"Filed. The station gets more confident."
+      :"Filed. The station learns from this.";
     $("fbStatus").hidden=false;
-    addFeed("operator","Verdict marked "+(correct?"RIGHT":"WRONG"));
   }catch(e){
-    addFeed("operator","Feedback failed: "+String(e&&e.message||e));
+    $("fbStatus").textContent="Feedback failed: "+String(e&&e.message||e);
+    $("fbStatus").hidden=false;
     fbControls(true);
   }
 }
@@ -715,6 +642,7 @@ $("btnWrongSend").addEventListener("click",()=>sendFeedback(false,$("fbNote").va
 /* ---------- long-running issues (analyst over the whole memory) ---------- */
 $("btnTrends").addEventListener("click",async()=>{
   $("btnTrends").disabled=true;
+  $("memTrends").hidden=false;
   $("memTrends").textContent="Reading the whole kitchen memory...";
   try{
     const r=await fetch("/memory/trends");
@@ -736,19 +664,6 @@ $("btnTrends").addEventListener("click",async()=>{
 
 /* ---------- kitchen memory panel ---------- */
 $("btnMemDash").addEventListener("click",()=>window.open("/memory-dashboard","_blank"));
-$("btnRecent").addEventListener("click",async()=>{
-  $("btnRecent").disabled=true;
-  try{
-    const r=await fetch("/memory/recent");
-    const d=await r.json();
-    const mems=(d.memories||[]).filter(m=>m.text);
-    $("memRecent").innerHTML=mems.length
-      ?mems.map(m=>`<div class="memitem"><div class="mt">${esc(m.type||"fact")}`+
-        `${m.score!=null?" &middot; "+esc(num(m.score)):""}</div>${esc(m.text)}</div>`).join("")
-      :'<div class="empty">No memories retrieved yet. They appear a few seconds after each plate.</div>';
-  }catch(e){$("memRecent").innerHTML='<div class="empty">'+esc(String(e&&e.message||e))+"</div>"}
-  $("btnRecent").disabled=false;
-});
 $("btnTeach").addEventListener("click",async()=>{
   const text=$("memTeach").value.trim();
   if(!text)return;
@@ -756,9 +671,11 @@ $("btnTeach").addEventListener("click",async()=>{
   try{
     const r=await fetch("/memory/correction",{method:"POST",
       headers:{"content-type":"application/json"},body:JSON.stringify({text})});
-    if(r.ok){addFeed("memory.xtrace","Correction stored: "+text.slice(0,60));$("memTeach").value=""}
-    else addFeed("memory.xtrace","Correction failed (HTTP "+r.status+")");
-  }catch(e){addFeed("memory.xtrace","Correction failed")}
+    $("memTeach").value="";
+    $("memTeach").placeholder=r.ok
+      ?"Stored. It applies to future plates of this dish."
+      :"Storing failed, try again.";
+  }catch(e){$("memTeach").placeholder="Storing failed, try again."}
   $("btnTeach").disabled=false;
 });
 
@@ -802,7 +719,6 @@ $("btnRebuild").addEventListener("click",async()=>{
           $("trainTag").textContent=s.state==="done"?"Bank updated":"Failed";
           $("trainStatus").className="statusline "+(s.state==="done"?"ready":"bad");
           $("btnRebuild").disabled=false;
-          if(s.state==="done")addFeed("train","Memory bank rebuilt; model hot-swaps on the next plate");
         }
       }catch(e){}
     },3000);
