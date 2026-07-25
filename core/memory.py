@@ -123,16 +123,23 @@ def record_inspection(result):
     threading.Thread(target=_ingest, daemon=True).start()
 
 
+CORRECTION_MARK = "Chef standing instruction"
+
+
 def record_correction(text):
-    """A chef's correction or standing instruction becomes a directive memory
-    (outcome=resolved stamps it), recallable through the trigger endpoint."""
+    """A chef's correction becomes a persistent instruction. XTrace's extractor
+    decides the memory type itself and files short declaratives as facts, so
+    the text carries a distinctive marker that recall can key on; outcome and
+    agentic are still sent so the extractor MAY promote it to a directive
+    lesson, in which case the unmetered trigger endpoint also surfaces it."""
     if not enabled():
         return None
+    content = f"{CORRECTION_MARK} for the sesame beef bowl at {station_user()}: {text}"
     return _post("/v1/memories", {
-        "messages": [{"role": "user", "content": text,
+        "messages": [{"role": "user", "content": content,
                       "date": datetime.now(timezone.utc).isoformat()}],
         "user_id": station_user(),
-        "conv_id": shift_id(),
+        "conv_id": "chef-corrections",
         "agent_id": AGENT_ID,
         "outcome": "resolved",
         "agentic": True,
@@ -150,21 +157,34 @@ def search(query, mode="retrieve", limit=8, include=None):
 
 
 def trigger_lessons(dish_id):
-    """Pre-verdict recall of chef corrections for this dish/station. The
-    /trigger endpoint is unmetered, so it can run on every single plate."""
+    """Pre-verdict recall of chef corrections for this dish/station.
+
+    Two paths, cheap first: the unmetered /trigger endpoint returns directive
+    lessons when XTrace's extractor promoted a correction to one; the reliable
+    path is a semantic search keyed on the correction marker, because short
+    declarative corrections are filed as plain facts."""
     if not enabled():
         return []
+    lessons = []
     resp = _post("/v1/memories/trigger", {
         "action": {"tool": "inspect_dish",
-                   "args": {"dish": "sesame-beef-bowl", "station": STATION,
+                   "args": {"dish": "sesame beef bowl", "station": STATION,
                             "dish_id": str(dish_id)}},
         "user_id": station_user(),
         "agent_id": AGENT_ID,
     }, timeout=8.0)
-    if not resp:
-        return []
-    data = resp.get("data") or resp.get("memories") or []
-    return [m.get("text", "") for m in data if m.get("text")][:3]
+    if resp:
+        data = resp.get("data") or resp.get("memories") or []
+        lessons = [m.get("text", "") for m in data if m.get("text")]
+    if not lessons:
+        resp = search(f"{CORRECTION_MARK} for this dish", mode="retrieve",
+                      limit=5, include=["fact"])
+        if resp:
+            mark = CORRECTION_MARK.lower()
+            lessons = [m.get("text", "") for m in (resp.get("data") or [])
+                       if mark in (m.get("text", "").lower())
+                       or "instruction" in (m.get("text", "").lower())]
+    return lessons[:3]
 
 
 def recall_insight(result):
