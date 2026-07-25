@@ -35,6 +35,13 @@
   <div class="sub">Manager briefing, live voice</div>
   <button id="mic">Start the briefing</button>
   <div id="status">idle</div>
+  <div id="meter" style="height:6px;border:1px solid var(--ink);margin-top:10px;display:none">
+    <div id="meterFill" style="height:100%;width:0%;background:var(--pass)"></div>
+  </div>
+  <div id="micWarn" style="margin-top:8px;font-size:11px;color:var(--fail);display:none">
+    The mic is silent. On a Mac: System Settings, Privacy and Security, Microphone,
+    allow your browser, then reload this page.
+  </div>
   <div id="transcript"></div>
   <div class="hint">Ask what it is seeing on the line, why plates are being held,
     what keeps going wrong, or give it a standing rule; it remembers.
@@ -96,8 +103,37 @@ async function start() {
     }
     pc.addTrack(ms.getTracks()[0]);
 
+    // live input level: if the browser is capturing real audio the bar moves;
+    // a flat bar while you talk means the OS is muting the mic, not Seefu
+    const ac = new AudioContext();
+    const analyser = ac.createAnalyser();
+    analyser.fftSize = 512;
+    ac.createMediaStreamSource(ms).connect(analyser);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    document.getElementById("meter").style.display = "block";
+    let quietFrames = 0;
+    (function level() {
+      analyser.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      document.getElementById("meterFill").style.width =
+        Math.min(100, Math.round(peak / 1.28)) + "%";
+      quietFrames = peak < 2 ? quietFrames + 1 : 0;
+      document.getElementById("micWarn").style.display =
+        quietFrames > 300 ? "block" : "none";      // ~5s of dead silence
+      requestAnimationFrame(level);
+    })();
+
     const dc = pc.createDataChannel("oai-events");
     const send = o => dc.send(JSON.stringify(o));
+
+    dc.addEventListener("open", () => {
+      // belt and braces: ask for server-side voice detection explicitly, then
+      // have the agent open the briefing itself so output is proven instantly
+      send({type: "session.update", session: {type: "realtime",
+            audio: {input: {turn_detection: {type: "server_vad"}}}}});
+      send({type: "response.create"});
+    });
 
     dc.addEventListener("message", e => {
       const ev = JSON.parse(e.data);
@@ -106,6 +142,10 @@ async function start() {
           console.error("realtime error:", ev);
           status("agent error: " + (ev.error?.message || "see console"), "");
           break;
+        case "input_audio_buffer.speech_started":
+          status("hearing you...", "live"); break;
+        case "input_audio_buffer.speech_stopped":
+          status("thinking...", "live"); break;
         case "output_audio_buffer.started":
           transcript = "";
           status("speaking", "speaking"); break;
