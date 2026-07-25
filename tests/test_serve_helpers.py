@@ -32,13 +32,17 @@ class RedirectedPathsTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
-        self._orig = (serve.CALIB, serve.RUNS, serve.DISH_SEQ)
-        serve.CALIB = tmp / "calibration.json"
+        self._orig = (serve.ROOT, serve.RUNS, serve.DISH_SEQ)
+        # dish-scoped paths (dish_calib, dish_normal_dir, dish_ckpt) all hang
+        # off serve.ROOT, so pointing ROOT into the tmp dir redirects them all
+        serve.ROOT = tmp
+        for slug in serve.DISHES:
+            (tmp / f"data/dishes/{slug}").mkdir(parents=True)
         serve.RUNS = tmp / "runs"
         serve.DISH_SEQ = serve.RUNS / ".dish_seq"
 
     def tearDown(self):
-        serve.CALIB, serve.RUNS, serve.DISH_SEQ = self._orig
+        serve.ROOT, serve.RUNS, serve.DISH_SEQ = self._orig
         self._tmp.cleanup()
 
 
@@ -209,11 +213,11 @@ def _stub_model(pp):
 class TestReadThreshold(RedirectedPathsTestCase):
 
     def test_reads_threshold_from_calibration_json(self):
-        serve.CALIB.write_text(json.dumps({"threshold": 37.25, "normal_max": 30.1}))
+        serve.dish_calib(serve.DEFAULT_DISH).write_text(json.dumps({"threshold": 37.25, "normal_max": 30.1}))
         self.assertEqual(serve.read_threshold(), (37.25, "calibration.json"))
 
     def test_int_threshold_coerced_to_float(self):
-        serve.CALIB.write_text(json.dumps({"threshold": 12}))
+        serve.dish_calib(serve.DEFAULT_DISH).write_text(json.dumps({"threshold": 12}))
         value, source = serve.read_threshold()
         self.assertIsInstance(value, float)
         self.assertEqual(value, 12.0)
@@ -228,7 +232,7 @@ class TestReadThreshold(RedirectedPathsTestCase):
         self.assertEqual(source, "model adaptive (UNCALIBRATED - run --calibrate)")
 
     def test_calib_without_threshold_key_falls_back_to_model(self):
-        serve.CALIB.write_text(json.dumps({"px_mm": {"mm_per_px": [0.1, 0.1]}}))
+        serve.dish_calib(serve.DEFAULT_DISH).write_text(json.dumps({"px_mm": {"mm_per_px": [0.1, 0.1]}}))
         pp = _Stub()
         pp.image_threshold = 2.25
         with mock.patch.object(serve, "get_model", return_value=_stub_model(pp)):

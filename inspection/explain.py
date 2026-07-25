@@ -25,9 +25,12 @@ import cv2
 ROOT = Path(__file__).resolve().parents[1]
 CACHE_FILE = ROOT / "runs/explain_cache.json"
 
-PROMPT = ("Two crops of the SAME region of a plated dish, a sesame beef bowl: "
-          "white rice base, glazed sesame beef with chili flecks, steamed "
-          "broccoli, scallion garnish, black bowl. Image 1: the KNOWN-GOOD "
+DEFAULT_DISH_DESC = ("a sesame beef bowl: white rice base, glazed sesame beef "
+                     "with chili flecks, steamed broccoli, scallion garnish, "
+                     "black bowl")
+
+PROMPT = ("Two crops of the SAME region of a plated dish, {dish_desc}. "
+          "Image 1: the KNOWN-GOOD "
           "reference plate. Image 2: the plate under inspection, flagged as "
           "anomalous here. Compare image 2 against image 1 and reply with "
           "EXACTLY one line:\n"
@@ -49,7 +52,7 @@ PROMPT = ("Two crops of the SAME region of a plated dish, a sesame beef bowl: "
           "('the upper right', 'the left side of the bowl') - the station "
           "computes the true location from the anomaly map. Describe only WHAT "
           "is wrong with the food you can see.")
-PROMPT_VERSION = b"v4-dish-fix"
+PROMPT_VERSION = b"v5-multi-dish"
 
 # The model sees a crop of the frame AFTER upload normalization has rotated or
 # warped the photo into the memory bank's geometry, so any dish-position claim
@@ -163,7 +166,7 @@ def _parse_verdict(text):
     return desc, fix, False
 
 
-def describe_crop(crop_bgr, ref_crop_bgr, fallback):
+def describe_crop(crop_bgr, ref_crop_bgr, fallback, dish_desc=DEFAULT_DISH_DESC):
     """Comparative call: the flagged crop NEXT TO the same region of a known-good
     frame, so the model judges what CHANGED, not what merely looks unusual.
     Returns (description, fix, cosmetic, how); cached; fallback on any failure."""
@@ -172,7 +175,8 @@ def describe_crop(crop_bgr, ref_crop_bgr, fallback):
     if not ok or not ok_ref:
         return fallback, None, False, "fallback"
     jpeg, jpeg_ref = buf.tobytes(), buf_ref.tobytes()
-    key = hashlib.sha256(jpeg + jpeg_ref + PROMPT_VERSION).hexdigest()
+    key = hashlib.sha256(jpeg + jpeg_ref + PROMPT_VERSION
+                       + dish_desc.encode()).hexdigest()
     cache = _load_cache()
     if key in cache:
         desc, fix, cosmetic = _parse_verdict(cache[key])
@@ -191,7 +195,8 @@ def describe_crop(crop_bgr, ref_crop_bgr, fallback):
             input=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": PROMPT},
+                    {"type": "input_text",
+                     "text": PROMPT.format(dish_desc=dish_desc)},
                     {"type": "input_image", "image_url": url_ref, "detail": "high"},
                     {"type": "input_image", "image_url": url, "detail": "high"},
                 ],
@@ -209,14 +214,15 @@ def describe_crop(crop_bgr, ref_crop_bgr, fallback):
         return fallback, None, False, f"fallback ({type(e).__name__})"
 
 
-def explain_findings(frame, ref_frame, blobs, findings):
+def explain_findings(frame, ref_frame, blobs, findings, dish_desc=DEFAULT_DISH_DESC):
     """Attach comparative vision descriptions, the fix suggestion, and the
     cosmetic classification in place. Each finding gains "fix" and "cosmetic"."""
     for blob, finding in zip(blobs, findings):
         fallback = f"Anomalous region at ({blob['cx']:.2f}, {blob['cy']:.2f})"
         crop = crop_blob(frame, blob)
         ref_crop = crop_blob(ref_frame, blob)
-        description, fix, cosmetic, how = describe_crop(crop, ref_crop, fallback)
+        description, fix, cosmetic, how = describe_crop(crop, ref_crop, fallback,
+                                                        dish_desc)
         finding["description"] = description
         finding["fix"] = fix
         finding["cosmetic"] = cosmetic
