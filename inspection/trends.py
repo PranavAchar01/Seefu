@@ -38,8 +38,11 @@ Reply with STRICT JSON only, no fences:
  "action": "<one imperative line>",
  "long_running": true|false,
  "confidence": "low"|"medium"|"high"}
-Ground every claim in the evidence given. If memory shows nothing similar,
-say it is a one-off with low confidence and a simple action."""
+Ground every claim in the evidence given, but always commit to a read: with
+thin evidence give your best professional judgment at low confidence and say
+what it is based on ("early read from two plates"). Never answer that there is
+not enough data. If memory shows nothing similar, call it a likely one-off,
+name what would change your mind, and give a simple action anyway."""
 
 TRENDS_PROMPT = """You are the quality analyst for Seefu, an automated
 plate-check station in a robot-run kitchen. Below is the kitchen's accumulated
@@ -56,8 +59,12 @@ Reply with STRICT JSON only, no fences:
              "root_cause": "<one line>",
              "fix": "<one imperative line>",
              "priority": "high"|"medium"|"low"}]}
-List at most 4 issues, highest priority first. An empty issues list is a valid
-answer for a healthy line."""
+List at most 4 issues, highest priority first. Sparse memory is normal early
+in a shift: commit to the best-supported provisional read anyway, mark it
+priority low, and cite however few events support it ("early read from two
+plates"). Never answer that there is not enough data to name trends. Return an
+empty issues list only when the memory is genuinely empty, and even then the
+summary says what the line will be watched for."""
 
 _client = None
 
