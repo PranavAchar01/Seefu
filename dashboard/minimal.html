@@ -14,8 +14,8 @@
    by colour alone - there is always a glyph or a word beside it, because this
    is a safety readout that has to survive a projector and a colourblind eye. */
 :root{
-  --paper:#FFFFFF;--panel:#F5F6F7;--line:#D6D9DD;--line-soft:#E6E8EB;
-  --ink:#111316;--muted:#5B6169;--faint:#8A9099;
+  --paper:#FFFFFF;--panel:#FFFFFF;--line:#000000;--line-soft:#000000;
+    --ink:#000000;--muted:#000000;--faint:#000000;
   --accent:#0B5FFF;--accent-deep:#0949C4;
   --pass:#0F7B4F;--pass-wash:#EEF6F2;
   --fail:#C62828;--fail-wash:#FBEEEE;
@@ -83,9 +83,9 @@ button.act{border:1px solid var(--line);background:var(--paper);color:var(--ink)
 button.act:hover:not(:disabled){background:var(--panel);border-color:var(--muted)}
 button.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.act.primary:hover:not(:disabled){background:var(--accent-deep);border-color:var(--accent-deep)}
-/* a disabled control reads as inert, never as a dimmed live button */
-button.act:disabled{cursor:not-allowed;background:var(--panel);
-  border-color:var(--line);color:var(--faint)}
+/* a disabled control reads as inert: dashed outline, never a grey dim */
+button.act:disabled{cursor:not-allowed;background:var(--paper);
+  border-style:dashed;color:var(--ink)}
 .statusline{font-family:var(--mono);font-size:11.5px;color:var(--muted);
   border-left:2px solid var(--line);padding-left:10px;min-height:17px}
 .statusline.ready{color:var(--ink);border-left-color:var(--accent)}
