@@ -101,7 +101,8 @@ async function start() {
       status("mic denied: " + err.name + " - allow the mic and click again");
       return;
     }
-    pc.addTrack(ms.getTracks()[0]);
+    const micTrack = ms.getTracks()[0];
+    pc.addTrack(micTrack);
 
     // live input level: if the browser is capturing real audio the bar moves;
     // a flat bar while you talk means the OS is muting the mic, not Seefu
@@ -128,10 +129,12 @@ async function start() {
     const send = o => dc.send(JSON.stringify(o));
 
     dc.addEventListener("open", () => {
-      // belt and braces: ask for server-side voice detection explicitly, then
-      // have the agent open the briefing itself so output is proven instantly
+      // server-side voice detection, and the agent finishes its sentences:
+      // speech during output never cancels the response (no barge-in), then
+      // the agent opens the briefing itself so output is proven instantly
       send({type: "session.update", session: {type: "realtime",
-            audio: {input: {turn_detection: {type: "server_vad"}}}}});
+            audio: {input: {turn_detection: {type: "server_vad",
+                                             interrupt_response: false}}}}});
       send({type: "response.create"});
     });
 
@@ -148,9 +151,13 @@ async function start() {
           status("thinking...", "live"); break;
         case "output_audio_buffer.started":
           transcript = "";
+          // the floor is the agent's until it finishes: the mic is gated shut
+          // while it speaks, so it cannot be interrupted or hear its own voice
+          micTrack.enabled = false;
           status("speaking", "speaking"); break;
         case "output_audio_buffer.stopped":
         case "output_audio_buffer.cleared":
+          micTrack.enabled = true;
           status("listening", "live");
           document.getElementById("transcript").textContent = transcript.trim();
           break;
