@@ -82,6 +82,7 @@ def mint_token():
                 "audio": {"output": {"voice": VOICE}},
                 "tools": TOOLS,
                 "tool_choice": "auto",
+                "max_output_tokens": 300,
             },
         )
     except Exception as e:
