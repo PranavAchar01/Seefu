@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+build/
+*.log
+
+# datasets, captures, model weights
+data/
+captures/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+.DS_Store
+.idea/
+.vscode/
