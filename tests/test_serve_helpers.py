@@ -334,6 +334,41 @@ class TestBuildFindings(RedirectedPathsTestCase):
 
 # ---------------- image_b64 ----------------
 
+class TestHuePresenceBlobs(RedirectedPathsTestCase):
+    """PatchCore is position-blind; the ingredient check is the positional
+    layer. Reference: a brown plate with a green garnish disc in the centre."""
+
+    def ref_plate(self):
+        ref = np.full((240, 240, 3), (40, 60, 120), np.uint8)
+        cv2.circle(ref, (120, 120), 40, (60, 200, 60), -1)
+        return ref
+
+    def check(self, upload):
+        with mock.patch.object(serve, "reference_frame",
+                               return_value=(self.ref_plate(), (0, 0, 240, 240))), \
+             mock.patch.object(serve, "register_to_reference", return_value=None):
+            return serve.hue_presence_blobs(upload)
+
+    def test_missing_green_garnish_is_flagged_at_its_zone(self):
+        upload = np.full((240, 240, 3), (40, 60, 120), np.uint8)   # garnish gone
+        blobs = self.check(upload)
+        self.assertTrue(blobs)
+        self.assertAlmostEqual(blobs[0]["cx"], 0.5, delta=0.2)
+        self.assertAlmostEqual(blobs[0]["cy"], 0.5, delta=0.2)
+
+    def test_identical_plate_is_not_flagged(self):
+        self.assertEqual(self.check(self.ref_plate()), [])
+
+    def test_normally_shifted_ingredient_is_not_flagged(self):
+        upload = np.full((240, 240, 3), (40, 60, 120), np.uint8)
+        cv2.circle(upload, (135, 128), 40, (60, 200, 60), -1)      # plating shift
+        self.assertEqual(self.check(upload), [])
+
+    def test_size_mismatch_returns_empty(self):
+        upload = np.full((100, 100, 3), (40, 60, 120), np.uint8)
+        self.assertEqual(self.check(upload), [])
+
+
 class TestImageB64(RedirectedPathsTestCase):
 
     def test_small_frame_roundtrips_as_jpeg(self):

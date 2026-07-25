@@ -177,11 +177,13 @@ def pixel_stats(image_threshold):
     return thr, pmin, pmax
 
 
-def save_overlay(bgr, full_map, blobs, threshold):
+def save_overlay(bgr, full_map, blobs, threshold, ring_blobs=None):
     """Plain image + red contours only (no heatmap, per operator preference).
     Contours are drawn ONLY around thresholded components that contain one of
     the surviving (non-cosmetic) blobs - the actual anomalous shapes, using the
-    anomalib dataset-anchored pixel threshold."""
+    anomalib dataset-anchored pixel threshold. Ingredient-check findings have
+    no heat in the anomaly map, so they are marked with a dashed ring instead.
+    A passing plate gets a clean image: no speckles, no rings."""
     thr_px, _, _ = pixel_stats(threshold)
     blend = bgr.copy()
     mask = (full_map >= thr_px).astype(np.uint8)
@@ -198,6 +200,10 @@ def save_overlay(bgr, full_map, blobs, threshold):
                                        cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(blend, [c for c in contours if cv2.contourArea(c) >= 40.0],
                          -1, (61, 61, 255), 3)
+    for b in ring_blobs or []:
+        center = (int(b["cx"] * w), int(b["cy"] * h))
+        radius = max(30, int(b["r"] * max(w, h)))
+        dashed_circle(blend, center, radius, (61, 61, 255))
     RUNS.mkdir(exist_ok=True)
     path = RUNS / f"overlay_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time()*1000) % 1000:03d}.png"
     cv2.imwrite(str(path), blend)
@@ -278,14 +284,39 @@ def run_inspection(bgr, dish_id=None):
     note = None
     if verdict == "pass" and cosmetic_regions:
         note = (f"{len(cosmetic_regions)} anomalous region(s) judged cosmetic "
-                "(labels/stickers/lighting also present on the reference) - "
-                "no physical damage found.")
+                "(lighting/steam/plating variance also present on the "
+                "reference) - no real plating miss found.")
     elif verdict == "defect" and coverage > 0.15:
         note = (f"{coverage:.0%} of the frame is anomalous - this looks like a "
                 "different dish, a moved plate, or a recipe the memory bank was "
                 "never trained on, not a local plating miss. Re-center the "
                 "plate, or retrain with normals for this dish.")
-    overlay_path = save_overlay(bgr, full_map, blobs, threshold)
+
+    # PatchCore is position-blind: a missing ingredient replaced by plausible
+    # texture from elsewhere on the plate scores normal. The ingredient check
+    # closes that hole, and vision has to confirm before a plate is held.
+    ring_blobs = []
+    if verdict == "pass" and os.environ.get("SEEFU_INGREDIENT_CHECK", "1") != "0":
+        candidates = hue_presence_blobs(bgr)
+        if candidates:
+            from explain import explain_findings
+            cand_findings = build_findings(candidates, w, h)
+            explain_findings(bgr, reference_frame()[0], candidates, cand_findings)
+            kept = [(b, f) for b, f in zip(candidates, cand_findings)
+                    if not f.get("cosmetic") and f.get("source") == "vision"]
+            if kept:
+                verdict = "defect"
+                for _, f in kept:
+                    f["source"] = "ingredient check + vision"
+                ring_blobs = [b for b, _ in kept]
+                blobs = blobs + ring_blobs
+                findings = findings + [f for _, f in kept]
+                note = ("Texture score passed, but the ingredient check found an "
+                        "expected element missing against the golden plate and "
+                        "vision confirmed it. Held.")
+
+    overlay_path = save_overlay(bgr, full_map, blobs if verdict == "defect" else [],
+                                threshold, ring_blobs)
     return {
         "dish_id": dish_id or next_dish_id(),
         "score": round(score, 4),
@@ -469,6 +500,68 @@ def normalize_upload(frame):
     except RuntimeError:
         pass                                      # no model yet: keep as composed
     return canvas, True, {"rot90cw": was_portrait, "rot180": rot180}
+
+
+HUE_BANDS = {
+    # BGR-independent HSV bands for the dish's color-coded ingredients. Green
+    # covers scallion garnish and broccoli; red covers the chili flecks.
+    "green": ((30, 60, 50), (95, 255, 255)),
+    "red": ((0, 120, 80), (12, 255, 255)),
+}
+
+
+def hue_presence_blobs(bgr, grid=6, expect=0.18, missing=0.25, near=0.3):
+    """Positional ingredient check: PatchCore matches texture patches with no
+    memory of WHERE they belong, so a plate whose garnish was replaced by
+    plausible beef texture sails under the score. This check is the antidote:
+    in registered space, any grid cell where the golden plate has meaningful
+    coverage of an ingredient hue and the upload has lost it (in the cell AND
+    its neighborhood, so normal plating shifts do not trigger) becomes a
+    candidate blob. Vision must confirm a candidate before it can hold a plate.
+    """
+    ref, (rx, ry, rw, rh) = reference_frame()
+    if bgr.shape[:2] != ref.shape[:2]:
+        return []
+    reg = register_to_reference(bgr)
+    frame = reg[0] if reg is not None else bgr
+    hsv_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2HSV)
+    hsv_up = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    flagged = np.zeros((grid, grid), np.uint8)
+    coverage = np.zeros((grid, grid), np.float32)
+    for lo, hi in HUE_BANDS.values():
+        mref = cv2.inRange(hsv_ref, lo, hi) > 0
+        mup = cv2.inRange(hsv_up, lo, hi) > 0
+        for i in range(grid):
+            for j in range(grid):
+                y0, y1 = ry + rh * i // grid, ry + rh * (i + 1) // grid
+                x0, x1 = rx + rw * j // grid, rx + rw * (j + 1) // grid
+                cov_ref = float(mref[y0:y1, x0:x1].mean())
+                if cov_ref < expect:
+                    continue
+                ch, cw = y1 - y0, x1 - x0
+                yy0, yy1 = max(ry, y0 - ch // 2), min(ry + rh, y1 + ch // 2)
+                xx0, xx1 = max(rx, x0 - cw // 2), min(rx + rw, x1 + cw // 2)
+                cov_up = float(mup[y0:y1, x0:x1].mean())
+                cov_near = float(mup[yy0:yy1, xx0:xx1].mean())
+                if cov_up < missing * cov_ref and cov_near < near * cov_ref:
+                    flagged[i, j] = 1
+                    coverage[i, j] = max(coverage[i, j], cov_ref)
+    if not flagged.any():
+        return []
+    h, w = bgr.shape[:2]
+    num, labels = cv2.connectedComponents(flagged, 8)
+    blobs = []
+    for k in range(1, num):
+        ys, xs = np.nonzero(labels == k)
+        cy = ry + (float(ys.mean()) + 0.5) * rh / grid
+        cx = rx + (float(xs.mean()) + 0.5) * rw / grid
+        span = max(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1)
+        r = 0.5 * span * max(rw, rh) / grid
+        blobs.append({"cx": round(cx / w, 4), "cy": round(cy / h, 4),
+                      "r": round(r / max(w, h), 4),
+                      "score": round(float(coverage[labels == k].max()), 3)})
+    blobs.sort(key=lambda b: -b["score"])
+    return blobs[:3]
 
 
 def overlay_file(name):
